@@ -27,6 +27,15 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  /**
+   * Called when a `tools/call` request fails at the transport layer (the
+   * server sent no successful response). Business failures the server
+   * reported as `isError: true` are delivered through the executor's thrown
+   * error and never reach this callback. The connection supervisor uses it to
+   * recycle the current generation so a dead server is reconnected instead of
+   * failing calls forever.
+   */
+  onConnectionError?: (error: unknown) => void
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -240,7 +249,17 @@ function createExecutor(
     // string/number/null). Fallback to {} lets the MCP server produce a
     // specific "missing required param" error the model can learn from.
     const argsObj = (typeof args === 'object' && args !== null ? args : {}) as Record<string, unknown>
-    const result = await callToolUncached(client, rawName, argsObj, exec, opts)
+    // A tools/call that fails before the server returns a result is a
+    // connection/transport failure: report it to the supervisor (if any) so
+    // the dead generation is recycled, then rethrow. The supervisor callback
+    // must never throw; it only closes the transport to drive onclose.
+    let result: Record<string, unknown>
+    try {
+      result = await callToolUncached(client, rawName, argsObj, exec, opts)
+    } catch (error) {
+      opts.onConnectionError?.(error)
+      throw error
+    }
 
     // The SDK may return a legacy `toolResult` shape; normalize to content array.
     if (!Array.isArray(result.content)) {

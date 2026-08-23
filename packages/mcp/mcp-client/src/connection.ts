@@ -126,6 +126,17 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     registrationFailure: 'contain',
     serverName: config.serverName,
     toolCallTimeoutMs: config.toolCallTimeoutMs,
+    // A tools/call that dies at the transport layer means the server is no
+    // longer serving this generation: recycle it so the supervisor reconnects
+    // with a fresh transport instead of failing every future call.
+    onConnectionError: () => {
+      const current = client
+      if (current === undefined || disposed) return
+      ctx.logger.warn(`${label}: tool call failed at the transport - recycling the connection`)
+      void (async () => {
+        try { await current.close() } catch { /* transport already gone */ }
+      })()
+    },
   }
   // The initial sync uses 'throw' when failOnStartupError is configured, so
   // a registration conflict propagates to the startup-await path. Re-syncs

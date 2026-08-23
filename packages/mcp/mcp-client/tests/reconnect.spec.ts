@@ -472,6 +472,50 @@ describe('reconnect supervisor', () => {
     await staleHandler()
     expect(mockListTools).toHaveBeenCalledTimes(listCalls)
   })
+
+  it('a tools/call transport failure recycles the generation and reconnects', async () => {
+    const { warns } = captureLogs(ctx)
+    await apply(ctx, stdioConfig({ initialDelayMs: 2, maxDelayMs: 8, maxAttempts: 5 }))
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(instances).toHaveLength(1)
+
+    // The server is gone: the next tools/call dies at the transport layer.
+    mockCallTool.mockRejectedValue(new Error('fetch failed'))
+    const failed = await ctx.tools.execute({
+      signal: testToolSignal, callId: nextCallId(), name: 'mcp__srv__remote', arguments: {},
+    })
+    expect(failed.isError).toBe(true)
+    expect(failed.error).toMatchObject({ message: 'fetch failed' })
+
+    // The executor reported the failure to the supervisor, which closed the
+    // dead generation and entered the reconnect loop.
+    await vi.waitFor(() => { expect(instances).toHaveLength(2) })
+    expect(warns.some(line => line.includes('tool call failed at the transport - recycling the connection'))).toBe(true)
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(mockConnect).toHaveBeenCalledTimes(2)
+  })
+
+  it('an isError business failure does not recycle the connection', async () => {
+    const { warns } = captureLogs(ctx)
+    await apply(ctx, stdioConfig({ initialDelayMs: 2, maxDelayMs: 8, maxAttempts: 5 }))
+    await vi.waitFor(() => { expect(ctx.tools.get('mcp__srv__remote')).toBeDefined() })
+    expect(instances).toHaveLength(1)
+
+    // The server answered with a business failure (isError: true): the
+    // executor throws for the model, but the transport is healthy, so no
+    // reconnect may happen.
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'bad input' }], isError: true })
+    const failed = await ctx.tools.execute({
+      signal: testToolSignal, callId: nextCallId(), name: 'mcp__srv__remote', arguments: {},
+    })
+    expect(failed.isError).toBe(true)
+    expect(failed.error).toMatchObject({ message: 'bad input' })
+
+    await sleep(30)
+    expect(instances).toHaveLength(1)
+    expect(mockConnect).toHaveBeenCalledTimes(1)
+    expect(warns.some(line => line.includes('recycling the connection'))).toBe(false)
+  })
 })
 
 // ---- Policy resolution ----
