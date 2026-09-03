@@ -16,9 +16,9 @@ set -u
 
 PORT="${PORT:-3080}"
 LABEL="com.allern.dsh-web"
-# Dist-tag this deployment follows. dsh-web-all requires the 0.1.2 line that
-# npm publishes under `next`; must match dsh-web-autostart.sh's DSH_TAG.
-DSH_TAG="${DSH_TAG:-next}"
+# Dist-tag this deployment follows (`latest` = 0.1.1 line; see the autostart
+# script header for why not `next`). Must match dsh-web-autostart.sh's DSH_TAG.
+DSH_TAG="${DSH_TAG:-latest}"
 LOG="$HOME/.dsh/autostart-update.log"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
