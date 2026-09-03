@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  DeepSeek Harness Web UI - server (macOS).
+
+  This agent OWNS the dsh web process: it starts `dsh web --no-open` at login
+  and whenever it is (re)started via `launchctl kickstart -k`. The autostart
+  script it runs first updates the official @deepseek-ai/dsh npm package, then
+  starts the server in the foreground so launchd keeps it alive.
+
+  On a Mac that is rarely rebooted, freshness is enforced by the companion
+  agent com.allern.dsh-web-unlock, which restarts this agent after each screen
+  unlock whenever a newer official dsh has been published. See
+  dsh-web-unlock-watcher.swift / dsh-web-unlock.sh.
+
+  Install:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.allern.dsh-web.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.allern.dsh-web
+    rm ~/Library/LaunchAgents/com.allern.dsh-web.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.allern.dsh-web</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/allern/.dsh/bin/dsh-web-autostart.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Start once at login like the Windows Startup folder; do not relaunch
+       continuously if the server exits on its own. The unlock watcher decides
+       when a restart is warranted (new official release). -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- launchd runs with a minimal PATH; the script re-sources nvm itself,
+       but HOME must be present for $HOME/.dsh resolution. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/allern</string>
+    <key>PATH</key>
+    <string>/Users/allern/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

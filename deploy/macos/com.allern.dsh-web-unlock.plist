@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  DeepSeek Harness Web UI - screen-unlock watcher (macOS).
+
+  macOS rarely reboots, so the web UI's "always run the latest official dsh"
+  guarantee (Windows gets it from its Startup folder on every boot) is instead
+  checked after every screen unlock. This agent keeps the Swift watcher alive;
+  the watcher reacts to screen unlock / session activation / wake and runs
+  ~/.dsh/bin/dsh-web-unlock.sh, which restarts the web UI through
+  com.allern.dsh-web only when a newer official @deepseek-ai/dsh is published
+  or the UI is down.
+
+  Install:
+    cp com.allern.dsh-web-unlock.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.allern.dsh-web-unlock.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.allern.dsh-web-unlock
+    rm ~/Library/LaunchAgents/com.allern.dsh-web-unlock.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.allern.dsh-web-unlock</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/allern/.dsh/bin/dsh-web-unlock-watcher</string>
+  </array>
+
+  <!-- Start at login AND stay alive so every later unlock is observed. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/allern</string>
+    <key>PATH</key>
+    <string>/Users/allern/.nvm/versions/node/v22.23.2/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
