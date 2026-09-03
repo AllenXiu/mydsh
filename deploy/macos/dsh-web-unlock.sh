@@ -16,6 +16,9 @@ set -u
 
 PORT="${PORT:-3080}"
 LABEL="com.allern.dsh-web"
+# Dist-tag this deployment follows. dsh-web-all requires the 0.1.2 line that
+# npm publishes under `next`; must match dsh-web-autostart.sh's DSH_TAG.
+DSH_TAG="${DSH_TAG:-next}"
 LOG="$HOME/.dsh/autostart-update.log"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
@@ -37,10 +40,10 @@ else
   RUNNING=0
 fi
 
-# ---- 2. compare installed vs latest official release ----
+# ---- 2. compare installed vs latest official release on the chosen tag ----
 INSTALLED="$(dsh --version 2>/dev/null || echo none)"
-LATEST="$(npm view @deepseek-ai/dsh version 2>/dev/null || echo unknown)"
-log "installed dsh: $INSTALLED | latest official: $LATEST | web running: $RUNNING"
+LATEST="$(npm view "@deepseek-ai/dsh@$DSH_TAG" version 2>/dev/null || echo unknown)"
+log "installed dsh: $INSTALLED | latest official ($DSH_TAG): $LATEST | web running: $RUNNING"
 
 # ---- 3. decide ----
 NEED_RESTART=0
@@ -57,7 +60,7 @@ fi
 if [ "$NEED_RESTART" -eq 1 ]; then
   if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     # -k kills the current instance, then starts it again (RunAtLoad); the
-    # autostart script re-runs `npm install -g @deepseek-ai/dsh@latest`
+    # autostart script re-runs `npm install -g @deepseek-ai/dsh@next`
     # followed by `dsh web --no-open`.
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
     log "kickstarted $LABEL"

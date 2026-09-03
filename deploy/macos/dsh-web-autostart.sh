@@ -13,6 +13,10 @@
 set -u
 
 PORT="${PORT:-3080}"
+# Which official npm dist-tag this deployment follows. dsh-web-all and friends
+# require the 0.1.2 development line, which npm publishes under `next`; the
+# `latest` tag still carries the older 0.1.1 rc. Keep these three in sync.
+DSH_TAG="${DSH_TAG:-next}"
 LOG="$HOME/.dsh/autostart-update.log"
 WEB_LOG="$HOME/.dsh/web.log"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -29,10 +33,11 @@ log() { echo "[$(ts)] $*" >> "$LOG"; }
 
 echo "[$(ts)] ===== dsh web autostart begin =====" >> "$LOG"
 
-# ---- 1. update the official dsh to the latest npm release ----
+# ---- 1. update the official dsh to the latest npm release of the chosen tag ----
 # Never run the repo fork in production: this Mac deployment follows the
-# official npm publish stream on every single start.
-if npm install -g @deepseek-ai/dsh@latest >> "$LOG" 2>&1; then
+# official npm publish stream on every single start. DSH_TAG is `next` because
+# the installed plugins (dsh-web-all family) require the 0.1.2 line.
+if npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$LOG" 2>&1; then
   log "dsh updated/verified: $(dsh --version 2>/dev/null || echo unknown)"
 else
   log "WARN dsh update failed (offline?); continuing with existing install"

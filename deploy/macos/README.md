@@ -10,7 +10,7 @@ Windows 上"每次开机都跑最新官方 dsh"靠 Startup 自启；macOS 很少
 | — | `~/.dsh/bin/dsh-web-unlock.sh` | 解锁后：对比版本 → 有新版或未运行才 kickstart 重启 |
 | `restart-dsh-web.cmd` | `restart-dsh-web.sh` / `restart-dsh-web.command`（双击） | 一键重启：停 3080 端口 → 重启 → 轮询等待 |
 | `%USERPROFILE%\.dsh\autostart-update.log` | `~/.dsh/autostart-update.log` | 更新/启动日志 |
-| 官方 `@deepseek-ai/dsh` npm 发布版 | 同左（不使用本 fork 的定制代码） | `npm install -g @deepseek-ai/dsh@latest`，避免脱离版本 |
+| 官方 `@deepseek-ai/dsh` npm 发布版 | 同左（不使用本 fork 的定制代码） | `npm install -g @deepseek-ai/dsh@next`，避免脱离版本（`next` = 0.1.2 开发线，dsh-web-all 插件族需要它） |
 
 LaunchAgent：
 - `com.allern.dsh-web` — **持有** dsh web 进程（前台 `exec`，launchd 管理生命周期）。
@@ -19,7 +19,7 @@ LaunchAgent：
 ## 依赖（一次性）
 
 - nvm（`~/.nvm`）+ Node 22 LTS（`nvm alias default`）
-- 官方包：`npm install -g @deepseek-ai/dsh@latest`（每次启动/解锁会自动确认最新）
+- 官方包：`npm install -g @deepseek-ai/dsh@next`（每次启动/解锁会自动确认 `next` 线最新）
 - Swift 编译器：macOS 自带 `/usr/bin/swiftc`（Command Line Tools）
 
 ## 安装
@@ -43,6 +43,12 @@ bash deploy/macos/uninstall.sh         # 卸载两个 LaunchAgent、watcher 与�
 ```
 
 日志：`~/.dsh/autostart-update.log`、`~/.dsh/web.log`。Web UI 默认 `http://127.0.0.1:3080`。
+
+## 版本线选择：跟随 `next` 而不是 `latest`
+
+`@linxin666/dsh-web-all`（插件市场安装的全家桶）要求宿主 `@deepseek-ai/dsh >= 0.1.2-alpha.4`，而官方 `latest` 线仍停留在 `0.1.1` rc。因此部署默认跟随官方 `next` 线（当前 `0.1.2-rc.1`）。两个脚本顶部都有 `DSH_TAG="${DSH_TAG:-next}"`，可在环境变量中覆盖；将来官方把 0.1.2 提升为 `latest` 后，可改回 `latest`。
+
+若要在不改文件的情况下临时用某个 tag 启动：`DSH_TAG=next bash ~/.dsh/bin/dsh-web-autostart.sh`。
 
 ## 开发说明
 
