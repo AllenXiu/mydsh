@@ -44,6 +44,9 @@ let window = NSWindow(
 window.title = "DeepSeek Harness 更新"
 window.isReleasedWhenClosed = false
 window.center()
+// Fixed content width so long status text can never widen the dialog.
+window.contentMinSize = NSSize(width: 420, height: 140)
+window.setContentSize(NSSize(width: 420, height: 140))
 
 // ---- views ----
 let indicator = NSProgressIndicator()
@@ -64,6 +67,13 @@ detailLabel.maximumNumberOfLines = 2
 let noteLabel = NSTextField(labelWithString: "更新期间请勿关闭本窗口或中断进程")
 noteLabel.font = .systemFont(ofSize: 11)
 noteLabel.textColor = .tertiaryLabelColor
+
+// Cap label widths: long text truncates with an ellipsis instead of widening
+// the fixed-size window.
+for label in [titleLabel, detailLabel, noteLabel] {
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.widthAnchor.constraint(lessThanOrEqualToConstant: 380).isActive = true
+}
 
 let stack = NSStackView(views: [titleLabel, indicator, detailLabel, noteLabel])
 stack.orientation = .vertical

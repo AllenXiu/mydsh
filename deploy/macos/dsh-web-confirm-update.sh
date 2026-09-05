@@ -164,24 +164,26 @@ if [ "$rc" = 0 ]; then
         log "confirm-update: progress window pid=$PROGRESS_PID"
       fi
 
-      # Run npm, appending output to a live log; a follower writes the newest
-      # non-empty line into the status file so the window tracks progress.
+      # Run npm, appending output to a live log. The dialog shows only short
+      # canned status lines (never raw npm output, which would widen it).
       : > "$NPM_LIVE"
       npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$NPM_LIVE" 2>&1 &
       NPM_PID=$!
+      PHASE=0
       while kill -0 "$NPM_PID" 2>/dev/null; do
-        LAST="$(grep -v '^$' "$NPM_LIVE" 2>/dev/null | tail -1)"
-        if [ -n "$LAST" ] && [ -n "$PROGRESS_PID" ]; then
-          printf 'STATUS:UPDATE|npm: %s\n' "$LAST" > "$STATUS_FILE"
+        if [ -n "$PROGRESS_PID" ]; then
+          PHASE=$(( (PHASE + 1) % 3 ))
+          case "$PHASE" in
+            0) MSG="正在下载并安装新版本，请稍候..." ;;
+            1) MSG="正在更新依赖包..." ;;
+            2) MSG="即将完成..." ;;
+          esac
+          printf 'STATUS:UPDATE|%s\n' "$MSG" > "$STATUS_FILE"
         fi
-        sleep 0.5
+        sleep 1
       done
       wait "$NPM_PID"
       NPM_RC=$?
-      if [ -n "$PROGRESS_PID" ]; then
-        LAST="$(grep -v '^$' "$NPM_LIVE" 2>/dev/null | tail -1)"
-        [ -z "$LAST" ] || printf 'STATUS:UPDATE|npm: %s\n' "$LAST" > "$STATUS_FILE"
-      fi
 
       if [ "$NPM_RC" -eq 0 ]; then
         log "confirm-update: updated to $(dsh --version 2>/dev/null || echo unknown)"
@@ -192,7 +194,7 @@ if [ "$rc" = 0 ]; then
       else
         log "WARN confirm-update: npm install failed; keeping $INSTALLED"
         if [ -n "$PROGRESS_PID" ]; then
-          printf 'STATUS:ERROR|npm 更新失败，请查看 %s\n' "$LOG" > "$STATUS_FILE"
+          printf 'STATUS:ERROR|更新失败，请查看 %s\n' "$LOG" > "$STATUS_FILE"
         fi
         exit 0
       fi
