@@ -64,47 +64,52 @@ if [ -f "$COMPAT_CHECK" ]; then
   log "$COMPAT_MSG"
 fi
 
-# Split the compat report into two visually separate sections: CONFLICT
-# plugins first (prominent), compatible ones after.
-CONFLICT_LINES=""
-OK_LINES=""
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  case "$line" in
-    *'CONFLICT'*) CONFLICT_LINES="$CONFLICT_LINES$line
-" ;;
-    *) OK_LINES="$OK_LINES$line
-" ;;
-  esac
-done <<< "$COMPAT_MSG"
-
-# Compact every report line to just its status token and package@version so
-# the dialog stays small (full reasons stay in the log). Line shape:
-#   "  !! @scope/pkg@1.2.3  CONFLICT on dsh ..."  ->  "⚠  @scope/pkg@1.2.3"
-#   "  ok pkg@1.2.3 ..." / "  -- pkg@1.2.3 ..."   ->  "✓  pkg@1.2.3"
-compact_lines() {
-  printf '%s\n' "$1" \
-    | awk '{ if (NF >= 2) { if ($1 == "!!") print "⚠ ", $2; else print "✓ ", $2 } }' \
-    | sed 's/^/    /'
-}
-CONFLICT_COMPACT="$(compact_lines "$CONFLICT_LINES")"
-OK_COMPACT="$(compact_lines "$OK_LINES")"
-if [ -n "$OK_COMPACT" ]; then
-  OK_COUNT="$(printf '%s\n' "$OK_COMPACT" | sed '/^[[:space:]]*$/d' | grep -c .)"
-else
-  OK_COUNT=0
+# Split the compat report into three visually separate sections using the
+# machine-readable verdict stream (shared single source, same as Windows):
+#   REJECT (!!) plugins -> will be auto-uninstalled (prominent first)
+#   WARN   (??) plugins -> kept; only a stale release list, surfaced for info
+#   everything else      -> compatible / unverified
+VERDICT_MSG=""
+REJECT_NAMES=""
+WARN_NAMES=""
+if [ -f "$COMPAT_CHECK" ]; then
+  VERDICT_MSG="$(node "$COMPAT_CHECK" --host "$LATEST" --verdict-names 2>/dev/null || true)"
+  REJECT_NAMES="$(printf '%s\n' "$VERDICT_MSG" | awk -F '\t' '$1 == "!!" { print $2 }')"
+  WARN_NAMES="$(printf '%s\n' "$VERDICT_MSG" | awk -F '\t' '$1 == "??" { print $2 }')"
 fi
+
+# Count remaining (compatible) plugins from the human report for a summary line.
+COMPAT_COUNT="$(printf '%s' "$COMPAT_MSG" | grep -cE '^  (ok|--) ' || true)"
+[ -n "$COMPAT_COUNT" ] || COMPAT_COUNT=0
+
+REJECT_DISPLAY="$(printf '%s\n' "$REJECT_NAMES" | sed '/^$/d' | sed 's/^/    ⚠  /')"
+WARN_DISPLAY="$(printf '%s\n' "$WARN_NAMES" | sed '/^$/d' | sed 's/^/    ·  /')"
 
 # Try a native GUI dialog first (macOS Aqua session).
 ANSWER=""
 rc=1
 if command -v osascript >/dev/null 2>&1; then
-  if [ -n "$CONFLICT_COMPACT" ]; then
+  if [ -n "$REJECT_DISPLAY" ]; then
     BODY="官方发布了新版本 dsh：$INSTALLED → $LATEST
 
 ⚠️ 升级将自动卸载以下不兼容插件：
-$CONFLICT_COMPACT
-✅ 其余 $OK_COUNT 个已安装插件兼容新版
+$REJECT_DISPLAY"
+    if [ -n "$WARN_DISPLAY" ]; then
+      BODY="$BODY
+
+ℹ️ 以下插件尚未声明支持 $LATEST，本次保留（升级后异常请手动卸载）：
+$WARN_DISPLAY"
+    fi
+    BODY="$BODY
+✅ 其余 $COMPAT_COUNT 个已安装插件兼容新版
+
+是否更新？"
+  elif [ -n "$WARN_DISPLAY" ]; then
+    BODY="官方发布了新版本 dsh：$INSTALLED → $LATEST
+
+ℹ️ 以下插件尚未声明支持 $LATEST（无硬冲突，本次保留）：
+$WARN_DISPLAY
+✅ 其余 $COMPAT_COUNT 个已安装插件兼容新版
 
 是否更新？"
   else
@@ -130,16 +135,11 @@ if [ "$rc" = 0 ]; then
   case "$ANSWER" in
     *"更新"*)
       log "confirm-update: user chose UPDATE"
-      # 1) UNINSTALL plugins that would conflict with the target host version,
-      #    so a broken third-party plugin can never take the main project
-      #    down. (Previously these were locked via cordis disable; removal is
-      #    cleaner and keeps the profile manifest in sync.)
-      if [ -n "$CONFLICT_LINES" ]; then
-        # Conflicting plugin names come from the shared compat-check itself
-        # (--conflict-names mode), so the extraction regex lives in ONE place
-        # (deploy/shared/dsh-web-plugin-compat-check.mjs) for both platforms.
-        CONFLICT_NAMES="$(node "$COMPAT_CHECK" --host "$LATEST" --conflict-names 2>/dev/null || true)"
-        for PLUGIN in $CONFLICT_NAMES; do
+      # 1) UNINSTALL plugins the shared compat-check REJECTed (!!) for the
+      #    target host version, so a broken third-party plugin can never take
+      #    the main project down. WARN (??) plugins are deliberately KEPT.
+      if [ -n "$REJECT_NAMES" ]; then
+        for PLUGIN in $REJECT_NAMES; do
           log "confirm-update: uninstalling conflicting plugin $PLUGIN"
           ( cd "$HOME/.dsh/profiles/web" \
               && dsh plugin --profile web remove "$PLUGIN" >> "$LOG" 2>&1 ) \
