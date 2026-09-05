@@ -14,7 +14,9 @@
 #    - if a newer release exists:
 #        - in a GUI session    -> native dialog with Update / Skip buttons
 #        - without GUI/terminal-> logs a note, does NOT update (fail safe)
-#    - "Update" -> runs `npm install -g @deepseek-ai/dsh@<tag>`
+#    - "Update" -> first LOCKS every conflicting plugin (dsh-web-plugin-lock.sh
+#                  disables its cordis row so it cannot break the boot), then
+#                  runs `npm install -g @deepseek-ai/dsh@<tag>`
 #    - "Skip"   -> leaves the installed version untouched
 #  Exit: 0 when the installed dsh is current OR the user chose Skip
 #        1 when an update was performed (caller may restart the server)
@@ -66,13 +68,19 @@ fi
 ANSWER=""
 rc=1
 if command -v osascript >/dev/null 2>&1; then
+  if printf '%s' "$COMPAT_MSG" | grep -q 'CONFLICT'; then
+    AUTO_LOCK_NOTE="
+冲突插件将在更新时被自动禁用（锁住），不影响主项目运行。"
+  else
+    AUTO_LOCK_NOTE=""
+  fi
   BODY="官方发布了新版本 dsh：
 当前  $INSTALLED
 最新  $LATEST
 
 —— 插件兼容性预检（升级到 $LATEST 后）——
 $COMPAT_MSG
-
+$AUTO_LOCK_NOTE
 是否立即更新？"
   # osascript heredoc: escape double quotes for AppleScript string safety.
   BODY_ESC="$(printf '%s' "$BODY" | sed 's/"/\\"/g')"
@@ -90,6 +98,15 @@ if [ "$rc" = 0 ]; then
   case "$ANSWER" in
     *"更新"*)
       log "confirm-update: user chose UPDATE"
+      # 1) Lock plugins that would conflict with the target host version so a
+      #    broken third-party plugin can never take the main project down.
+      LOCKER="$HOME/.dsh/bin/dsh-web-plugin-lock.sh"
+      if [ -x "$LOCKER" ]; then
+        log "confirm-update: locking plugins conflicting with dsh $LATEST"
+        bash "$LOCKER" lock "$LATEST" >> "$LOG" 2>&1 || \
+          log "WARN confirm-update: plugin-lock reported an error; continuing"
+      fi
+      # 2) Upgrade the main project.
       if npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$LOG" 2>&1; then
         log "confirm-update: updated to $(dsh --version 2>/dev/null || echo unknown)"
         exit 1

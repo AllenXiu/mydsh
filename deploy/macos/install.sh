@@ -29,12 +29,13 @@ PLIST_UNLOCK_DST="$LA_DIR/$LABEL_UNLOCK.plist"
 echo "==> 1/5 Prepare directories"
 mkdir -p "$LA_DIR" "$BIN_DIR"
 
-echo "==> 2/5 Install autostart + unlock + confirm scripts into $BIN_DIR"
+echo "==> 2/5 Install autostart + unlock + confirm + lock scripts into $BIN_DIR"
 cp "$HERE/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-autostart.sh"
 cp "$HERE/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-unlock.sh"
 cp "$HERE/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-confirm-update.sh"
+cp "$HERE/dsh-web-plugin-lock.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
 cp "$HERE/dsh-web-plugin-compat-check.mjs" "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
-chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh"
+chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
 
 echo "==> 3/5 Compile the screen-unlock watcher"
 if [ ! -x "$BIN_DIR/dsh-web-unlock-watcher" ] || [ "$HERE/dsh-web-unlock-watcher.swift" -nt "$BIN_DIR/dsh-web-unlock-watcher" ]; then
