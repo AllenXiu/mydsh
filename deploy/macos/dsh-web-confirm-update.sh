@@ -14,9 +14,9 @@
 #    - if a newer release exists:
 #        - in a GUI session    -> native dialog with Update / Skip buttons
 #        - without GUI/terminal-> logs a note, does NOT update (fail safe)
-#    - "Update" -> first LOCKS every conflicting plugin (dsh-web-plugin-lock.sh
-#                  disables its cordis row so it cannot break the boot), then
-#                  runs `npm install -g @deepseek-ai/dsh@<tag>`
+#    - the dialog splits plugins into a prominent CONFLICT section and a
+#      compatible section; "Update" UNINSTALLS every conflicting plugin, then
+#      runs `npm install -g @deepseek-ai/dsh@<tag>` and shows a progress window
 #    - "Skip"   -> leaves the installed version untouched
 #  Exit: 0 when the installed dsh is current OR the user chose Skip
 #        1 when an update was performed (caller may restart the server)
@@ -64,24 +64,43 @@ if [ -f "$COMPAT_CHECK" ]; then
   log "$COMPAT_MSG"
 fi
 
+# Split the compat report into two visually separate sections: CONFLICT
+# plugins first (prominent), compatible ones after.
+CONFLICT_LINES=""
+OK_LINES=""
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *'CONFLICT'*) CONFLICT_LINES="$CONFLICT_LINES$line
+" ;;
+    *) OK_LINES="$OK_LINES$line
+" ;;
+  esac
+done <<< "$COMPAT_MSG"
+
 # Try a native GUI dialog first (macOS Aqua session).
 ANSWER=""
 rc=1
 if command -v osascript >/dev/null 2>&1; then
-  if printf '%s' "$COMPAT_MSG" | grep -q 'CONFLICT'; then
-    AUTO_LOCK_NOTE="
-冲突插件将在更新时被自动禁用（锁住），不影响主项目运行。"
-  else
-    AUTO_LOCK_NOTE=""
-  fi
-  BODY="官方发布了新版本 dsh：
+  if [ -n "$CONFLICT_LINES" ]; then
+    BODY="官方发布了新版本 dsh：
 当前  $INSTALLED
 最新  $LATEST
 
-—— 插件兼容性预检（升级到 $LATEST 后）——
-$COMPAT_MSG
-$AUTO_LOCK_NOTE
+⚠️  以下插件与新版不兼容，升级时将自动卸载：
+$CONFLICT_LINES
+✅  以下插件兼容新版：
+$OK_LINES
+升级会卸载上述冲突插件，主项目不受影响。是否更新？"
+  else
+    BODY="官方发布了新版本 dsh：
+当前  $INSTALLED
+最新  $LATEST
+
+✅  已安装插件均兼容新版：
+$OK_LINES
 是否立即更新？"
+  fi
   # osascript heredoc: escape double quotes for AppleScript string safety.
   BODY_ESC="$(printf '%s' "$BODY" | sed 's/"/\\"/g')"
   ANSWER="$(osascript <<EOF 2>/dev/null
@@ -98,13 +117,27 @@ if [ "$rc" = 0 ]; then
   case "$ANSWER" in
     *"更新"*)
       log "confirm-update: user chose UPDATE"
-      # 1) Lock plugins that would conflict with the target host version so a
-      #    broken third-party plugin can never take the main project down.
-      LOCKER="$HOME/.dsh/bin/dsh-web-plugin-lock.sh"
-      if [ -x "$LOCKER" ]; then
-        log "confirm-update: locking plugins conflicting with dsh $LATEST"
-        bash "$LOCKER" lock "$LATEST" >> "$LOG" 2>&1 || \
-          log "WARN confirm-update: plugin-lock reported an error; continuing"
+      # 1) UNINSTALL plugins that would conflict with the target host version,
+      #    so a broken third-party plugin can never take the main project
+      #    down. (Previously these were locked via cordis disable; removal is
+      #    cleaner and keeps the profile manifest in sync.)
+      if [ -n "$CONFLICT_LINES" ]; then
+        CONFLICT_NAMES="$(printf '%s' "$CONFLICT_LINES" \
+          | grep -oE '@[a-z0-9._-]+/[a-z0-9._-]+@[0-9][^ ]*|[a-z0-9][a-z0-9._-]*@[0-9][^ ]*' \
+          | sed -E 's/@[0-9][^@]*$//' \
+          | sort -u)"
+        for PLUGIN in $CONFLICT_NAMES; do
+          log "confirm-update: uninstalling conflicting plugin $PLUGIN"
+          ( cd "$HOME/.dsh/profiles/web" \
+              && dsh plugin --profile web remove "$PLUGIN" >> "$LOG" 2>&1 ) \
+            || log "WARN confirm-update: failed to remove $PLUGIN; continuing"
+        done
+        # Clean any leftover lock rows for the removed plugins (from earlier
+        # plugin-lock versions of this flow).
+        LOCKER="$HOME/.dsh/bin/dsh-web-plugin-lock.sh"
+        if [ -x "$LOCKER" ]; then
+          bash "$LOCKER" unlock >> "$LOG" 2>&1 || true
+        fi
       fi
       # 2) Show a live progress window while npm installs the new dsh.
       PROGRESS_BIN="$HOME/.dsh/bin/dsh-update-progress"
