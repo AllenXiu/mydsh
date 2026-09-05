@@ -87,12 +87,21 @@ function readJson(p) {
 // --- host version under test ---
 let hostVersion = host
 let hostSubversionForTarget = undefined
+// The smoke probe resolves against the INSTALLED host; it is decisive only
+// when the version under test equals that install (no --host, or --host is the
+// running version). For a future target it stays advisory.
+let installedHostVersion = undefined
 if (hostVersion) {
   hostSubversionForTarget = () => hostVersion
 } else {
   const dshPkg = DSH_ROOT ? readJson(join(DSH_ROOT, 'package.json')) : undefined
   hostVersion = dshPkg?.version || 'unknown'
 }
+{
+  const dshPkg = DSH_ROOT ? readJson(join(DSH_ROOT, 'package.json')) : undefined
+  installedHostVersion = dshPkg?.version
+}
+const probeApplies = host === undefined || host === installedHostVersion
 
 const hostSubversionCache = new Map()
 function hostSubversion(name) {
@@ -111,6 +120,101 @@ const satisfies = (range, version) => {
   } catch {
     return undefined
   }
+}
+
+// --- smoke probe: does the ACTUAL host export the @deepseek-ai/* subpaths a
+// plugin imports? Catches manifest lies (peerDeps "*", stale engines) because
+// it inspects the real export map of the host the plugin would run against. ---
+function hostProvides(specifier) {
+  // specifier like "@deepseek-ai/dsh-client-runtime/client" or "@deepseek-ai/cordis"
+  if (!specifier.startsWith('@deepseek-ai/')) return undefined // not host-scoped
+  const rest = specifier.slice('@deepseek-ai/'.length)
+  const slash = rest.indexOf('/')
+  const bare = slash === -1 ? rest : rest.slice(0, slash)
+  const sub = slash === -1 ? '' : rest.slice(slash) // "/client"
+  const pkgDir = HOST_DEP_ROOT ? join(HOST_DEP_ROOT, '@deepseek-ai', bare) : undefined
+  if (!pkgDir) return undefined
+  const pj = readJson(join(pkgDir, 'package.json'))
+  if (!pj) return false // subpackage not present in this host
+  if (!sub) return true
+  const ex = pj.exports
+  const want = './' + sub.slice(1)
+  if (ex && typeof ex === 'object') {
+    if (ex[want]) return true
+    if (ex['./*']) return true
+    return false // host uses an exports map and this subpath is absent
+  }
+  // no exports map: fall back to physical file
+  const cands = [join(pkgDir, sub.slice(1)), join(pkgDir, sub.slice(1) + '.js'), join(pkgDir, sub.slice(1) + '.mjs')]
+  return cands.some((c) => existsSync(c))
+}
+
+// Extract every @deepseek-ai/* specifier the plugin actually imports in its
+// entry artifacts. Bundles keep externals as string literals; minifiers alias
+// require to a short local (e.g. `e("@deepseek-ai/x")`), so match ANY
+// identifier call whose sole string argument starts with @deepseek-ai/, plus
+// the `from "..."` / `import "..."` ESM forms.
+const IMPORT_RE = /\b(?:[A-Za-z_$][\w$]*)\s*\(\s*["'`](@deepseek-ai\/[^"'`]+)["'`]\s*\)|(?:from|import)\s+["'`](@deepseek-ai\/[^"'`]+)["'`]/g
+
+// Collect the resolved entry files for one role. Server entries live under
+// "." or "./host" and resolve through node's exports map; client bundles live
+// under "./client" and resolve through the browser module table instead, where
+// bare @deepseek-ai/dsh-client-* names are table entries, not node packages.
+function entryFiles(pkg, pkgJson, role) {
+  const files = []
+  const ex = pkgJson.exports
+  const key = role === 'client' ? './client' : '.'
+  if (ex && typeof ex === 'object') {
+    const v = ex[key] || (role === 'server' ? ex['./host'] : undefined)
+    if (typeof v === 'string') files.push(join(pkg, v))
+    else if (v && typeof v === 'object' && typeof v.default === 'string') files.push(join(pkg, v.default))
+  }
+  if (role === 'server' && files.length === 0 && pkgJson.main) files.push(join(pkg, pkgJson.main))
+  if (files.length === 0 && role === 'client') files.push(join(pkg, 'client.js'))
+  return files
+}
+
+// True conflict when a subpath import is absent from the host's exports map,
+// or when a BARE import names a package the host does not ship at all and it is
+// a server import. Bare client-table imports are left to the runtime.
+function classifyMissing(specifier, role, fromDir) {
+  const hasSub = specifier.slice('@deepseek-ai/'.length).includes('/')
+  if (role === 'client' && !hasSub) return 'table'   // browser module table entry
+  try {
+    // Resolve through the plugin's OWN resolution chain (which reaches the dsh
+    // install and the profile module fallback exactly as the runtime would).
+    require.resolve(specifier, { paths: [fromDir] })
+    return 'ok'
+  } catch {
+    return 'missing'
+  }
+}
+
+function probePlugin(pluginDir, pkgJson) {
+  const seen = new Set()
+  for (const role of ['server', 'client']) {
+    for (const file of entryFiles(pluginDir, pkgJson, role)) {
+      let text
+      try { text = readFileSync(file, 'utf8') } catch { continue }
+      for (const m of text.matchAll(IMPORT_RE)) {
+        const spec = m[1] || m[2]
+        if (spec) seen.add(role + '|' + spec)
+      }
+    }
+  }
+  const missing = []
+  const table = []
+  let ok = 0
+  for (const tagged of seen) {
+    const bar = tagged.indexOf('|')
+    const role = tagged.slice(0, bar)
+    const spec = tagged.slice(bar + 1)
+    const verdict = classifyMissing(spec, role, pluginDir)
+    if (verdict === 'missing') missing.push(spec)
+    else if (verdict === 'table') table.push(spec)
+    else ok++
+  }
+  return { missing, table, ok }
 }
 
 // --- which profile deps are third-party plugins (not @deepseek-ai scope) ---
@@ -145,38 +249,63 @@ for (const name of thirdParty) {
 
   const peerDeps = pkg.peerDependencies ?? {}
   const hostPeerEntries = Object.entries(peerDeps).filter(([k]) => k.startsWith('@deepseek-ai/'))
-  const peerIssues = []
+
+  // --- verdict: three levels ---
+  //   REJECT (!!) : hard evidence - manifest range violated, OR the smoke probe
+  //                 proved the plugin imports a host subpath that does not exist
+  //   WARN  (??)  : soft signal only - an explicit release list that does not
+  //                 (yet) mention this host version, with no other objection.
+  //                 The author may simply not have updated the list.
+  //   ok / --     : compatible, or nothing declared.
+  const reject = []
+  const warn = []
+
+  if (dshEngineRange && satisfies(dshEngineRange, hostVersion) === false) {
+    reject.push(`engines.dsh requires ${dshEngineRange}`)
+  }
+
+  const peerRanges = []
   for (const [dep, range] of hostPeerEntries) {
     if (dep === '@deepseek-ai/cordis' || dep === '@deepseek-ai/schemastery') continue
     const installed = hostSubversion(dep)
     const ok = installed ? satisfies(range, installed) : undefined
     if (ok === false) {
-      peerIssues.push(`${dep} wants ${range}, host has ${installed}`)
+      reject.push(`${dep} wants ${range}, host has ${installed}`)
+    } else {
+      peerRanges.push(`${dep}@${range}`)
     }
   }
 
-  // --- verdict ---
-  const problems = []
-  if (dshEngineRange && satisfies(dshEngineRange, hostVersion) === false) {
-    problems.push(`engines.dsh requires ${dshEngineRange}`)
-  }
-  if (releaseDeclared && releaseState !== 'compatible') {
-    problems.push(`compatibility list does not cover dsh ${hostVersion}`)
-  }
-  problems.push(...peerIssues)
-
   // Known transitive/runtime conflicts that package manifests cannot express.
-  // Empirically: @linxin666/dsh-web-all < 0.3.9 pins dsh-better-sidebar 0.15.x,
-  // whose server half imports `settingsNamespace` from @deepseek-ai/dsh-settings
-  // - an export removed in dsh 0.1.2. So web-all < 0.3.9 crashes on a 0.1.2+
-  // host even though its engines claim >=0.1.1-rc.1.
   if (hostIs012 && name === '@linxin666/dsh-web-all' && version && semver && semver.lt(version, '0.3.9')) {
-    problems.push('known: web-all <0.3.9 pins better-sidebar 0.15.x which needs settingsNamespace removed in dsh 0.1.2+')
+    reject.push('known: web-all <0.3.9 pins better-sidebar 0.15.x which needs settingsNamespace removed in dsh 0.1.2+')
   }
 
-  if (problems.length > 0) {
-    lines.push(`  !! ${name}@${version}  CONFLICT on dsh ${hostVersion}: ${problems.join('; ')}`)
-  } else if (dshEngineRange || releaseState === 'compatible' || hostPeerEntries.length > 0) {
+  // Smoke probe: actual imports vs actual host exports (strongest evidence).
+  // Server-role bare/subpath imports must resolve in the host; client-role
+  // BARE imports are browser-module-table names and are not hard failures.
+  // require.resolve reflects ONLY the currently-installed host, so smoke
+  // findings are hard REJECTs only when that host IS the version under test;
+  // for a --host target (upgrade preview) they cannot prove the target breaks
+  // and stay advisory (folded into the compatible/unknown verdict).
+  const probe = probePlugin(join(profileDir, 'node_modules', name), pkg)
+  if (probe.missing.length > 0 && probeApplies) {
+    for (const spec of probe.missing) {
+      reject.push(`smoke: imports ${spec}, not exported by this host`)
+    }
+  }
+
+  if (reject.length === 0 && releaseDeclared && releaseState !== 'compatible') {
+    // Only a stale/uncovered explicit list: warn, do not kill. This fixes the
+    // usage-billing false-positive class (author lists old versions only).
+    warn.push(`compatibility list does not (yet) cover dsh ${hostVersion}; no other conflict found`)
+  }
+
+  if (reject.length > 0) {
+    lines.push(`  !! ${name}@${version}  CONFLICT on dsh ${hostVersion}: ${reject.join('; ')}`)
+  } else if (warn.length > 0) {
+    lines.push(`  ?? ${name}@${version}  WARN on dsh ${hostVersion}: ${warn.join('; ')}`)
+  } else if (dshEngineRange || releaseState === 'compatible' || hostPeerEntries.length > 0 || probe.ok > 0) {
     lines.push(`  ok ${name}@${version}  compatible with dsh ${hostVersion}`)
   } else {
     lines.push(`  -- ${name}@${version}  no host-version declaration (low risk, unverified)`)
