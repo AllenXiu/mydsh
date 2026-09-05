@@ -35,7 +35,7 @@ deploy/macos 各放一份副本，容易漂移。**现在只有 deploy/shared/ �
 |---|---|---|
 | `dsh-autostart.cmd` | deploy/windows/ | 启动器：自定位（`%~dp0`）找仓库里的 ps1 → 跑更新确认 → 解析 dsh → 启动 web |
 | `dsh-web-update.ps1` | deploy/windows/ | 核心：`dsh --version` vs `npm view @deepseek-ai/dsh@latest` → 有新版跑 compat 预检 → MessageBox 询问（冲突插件单列）→ Yes 逐个 `dsh plugin --profile web remove` 卸载冲突 → WinForms 进度窗轮转阶段文案的同时 `npm install -g` 升级 |
-| `dsh-web-plugin-compat-check.mjs` | **deploy/shared/**（唯一来源） | 升级前预检（纯 Node、跨平台）：扫描 web profile 第三方插件对目标宿主的声明（engines.dsh / compatibility.dshReleases / @deepseek-ai peerDeps），输出 `CONFLICT` 行；`--conflict-names` 模式直接输出冲突包名（一行一个），Windows 与 macOS 都不再各自实现解析正则 |
+| `dsh-web-plugin-compat-check.mjs` | **deploy/shared/**（唯一来源） | 升级前预检（纯 Node、跨平台，**三级判定** REJECT/WARN/兼容，细节见 deploy/shared/README.md）：REJECT（engines/peer/已知规则/冒烟证实）→升级时卸载；WARN（仅声明列表未覆盖）→保留并提示。输出 `--conflict-names` / `--warn-names` / `--verdict-names`(TSV) 供两平台脚本消费，提取正则只此一份 |
 | `dsh-web-autostart.vbs` | deploy/windows/ | **模板**（占位符 `<REPO_ROOT>`）：install.ps1 把真实仓库路径替换后写入 Startup |
 | `install.ps1` | deploy/windows/ | 把 Startup VBS 注册/刷新为指向本仓库；顺带删除旧的 detached 副本（§6） |
 | `uninstall.ps1` | deploy/windows/ | 移除 Startup VBS，停止开机自启；仓库文件不动 |
@@ -72,7 +72,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/uninstall.ps1
 ```powershell
 # 预检某个目标版本下当前插件兼容性（读 deploy/shared 这份）
 node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本>
-node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --conflict-names  # 只要冲突包名
+node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --conflict-names  # 只要 REJECT 冲突包名
+node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --verdict-names     # TSV：<REJECT|WARN>\t<包名>
 
 # 手动触发一次"检查→询问→升级"
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-update.ps1
@@ -82,7 +83,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-updat
 
 ## 5. 已知冲突与版本线说明
 
-- 曾与 0.1.1 深度绑定、与 0.1.2 冲突的 `@kenz1117/dsh-ui-usage-billing`（1.0.10 及更早）在升级到 0.1.2 时被自动卸载并单列在弹窗中。
+- 兼容预检为**三级判定**（REJECT/WARN/兼容，规则细节见 deploy/shared/README.md）。`@kenz1117/dsh-ui-usage-billing` 这类"声明列表只覆盖 0.1.1、无其他硬证据"的插件现判为 **WARN**：升级时**保留**，只在弹窗提示"尚未声明支持"；不再仅因列表过期就卸载。只有 `engines.dsh`/peer 范围违反、内置已知规则或冒烟探针证实不兼容（如 web-all 一例）才判 **REJECT** 并自动卸载。
 - `@linxin666/dsh-web-all` < 0.3.9 的 engines 虽写 `>=0.1.1-rc.1`，但其固定依赖 `dsh-better-sidebar` 0.15.x 引用 0.1.2 已删除的 `settingsNamespace` 导出——**实测在 0.1.2 崩溃**。compat-check 内置该**已知运行时冲突规则**（`web-all <0.3.9` 对 `0.1.2+` 判 CONFLICT）。需要升回 0.1.2 兼容版时手动 `dsh plugin --profile web add @linxin666/dsh-web-all@0.3.14 -E`。
 - 升级到更高主线时先跑一次预检，把新出现的 `CONFLICT` 纳入弹窗预期。
 

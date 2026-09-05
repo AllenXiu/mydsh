@@ -60,23 +60,32 @@ if (Test-Path $compatCheck) {
   Log "plugin compat vs $latest`:"
   Log $compatReport
 }
-# conflict package names come from the shared compat-check itself (its
-# --conflict-names mode), so the name-extraction regex lives in exactly ONE
-# place (deploy/shared/dsh-web-plugin-compat-check.mjs) for both platforms.
+# REJECT (!! CONFLICT) plugins are auto-uninstalled; WARN (??) plugins - only a
+# stale release list, no hard evidence - are KEPT and merely surfaced in the
+# dialog. Both name lists come from the shared compat-check (--verdict-names
+# TSV), so the extraction regex lives in ONE place (deploy/shared/).
 $conflictNames = @()
+$warnNames = @()
 if (Test-Path $compatCheck) {
-  $conflictNames = @((& node $compatCheck --host $latest --conflict-names 2>$null) | Where-Object { $_ })
+  $verdicts = @(& node $compatCheck --host $latest --verdict-names 2>$null | Where-Object { $_ })
+  $conflictNames = @($verdicts | Where-Object { $_.StartsWith('!!') } | ForEach-Object { ($_ -split "`t")[1] })
+  $warnNames = @($verdicts | Where-Object { $_.StartsWith('??') } | ForEach-Object { ($_ -split "`t")[1] })
 }
 
 # --- ask the human ---
 Add-Type -AssemblyName System.Windows.Forms
+$parts = @("官方 dsh 发布新版本：$installed  →  $latest")
 if ($conflictNames.Count -gt 0) {
-  $msg = "官方 dsh 发布新版本：$installed  →  $latest`n`n" +
-         "⚠ 升级将自动卸载以下不兼容插件：`n    " + ($conflictNames -join "`n    ") +
-         "`n`n确认升级？"
-} else {
-  $msg = "官方 dsh 发布新版本：$installed  →  $latest`n`n✅ 已安装插件均兼容新版`n`n是否立即更新？"
+  $parts += "`n`n⚠ 升级将自动卸载以下不兼容插件：`n    " + ($conflictNames -join "`n    ")
 }
+if ($warnNames.Count -gt 0) {
+  $parts += "`n`n⚠ 以下插件尚未声明支持 $latest（本次保留；如升级后异常请手动卸载）：`n    " + ($warnNames -join "`n    ")
+}
+if ($conflictNames.Count -eq 0 -and $warnNames.Count -eq 0) {
+  $parts += "`n`n✅ 已安装插件均兼容新版"
+}
+$parts += "`n`n确认升级？"
+$msg = $parts -join ''
 $choice = [System.Windows.Forms.MessageBox]::Show($msg, 'DeepSeek Harness 更新', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
 if ($choice -ne 'Yes') { Log 'user chose No - keeping current'; exit 0 }
 

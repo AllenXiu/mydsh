@@ -12,8 +12,9 @@
 //   node dsh-web-plugin-compat-check.mjs [--profile <dir>] [--host <version>] [--conflict-names]
 //   --host defaults to the installed host version; pass the prospective NEW
 //   version to preview conflicts AFTER an upgrade.
-//   --conflict-names: print only the bare package names of CONFLICT plugins
-//   (one per line) instead of the human report.
+//   --conflict-names: package names of REJECT (!! CONFLICT) plugins, one per line
+//   --warn-names    : package names of WARN (??) plugins, one per line
+//   --verdict-names : "<VERDICT>\t<name>" per REJECT/WARN plugin (TSV, for scripts)
 //
 // Cross-platform: locates the dsh install via `npm prefix -g` (win32) or the
 // resolved dsh bin (macOS/Linux), and loads semver from the dsh installation's
@@ -37,6 +38,8 @@ const argVal = (flag) => {
 const profileDir = argVal('--profile') || join(homedir(), '.dsh/profiles/web')
 const host = argVal('--host') || argVal('--target')
 const conflictNamesOnly = args.includes('--conflict-names')
+const warnNamesOnly = args.includes('--warn-names')
+const verdictNames = args.includes('--verdict-names')
 
 // --- locate the dsh install (cross-platform) ---
 function dshRoot() {
@@ -314,15 +317,18 @@ for (const name of thirdParty) {
 
 if (thirdParty.length === 0) lines.push('  (no third-party plugins installed)')
 
-// --conflict-names delegates name extraction to this one file, so the macOS
-// (bash) and Windows (PowerShell) flows do not re-implement the same regex.
-if (conflictNamesOnly) {
-  const names = []
+// Machine-readable name modes keep the extraction regex in THIS one file, so the
+// macOS (bash) and Windows (PowerShell) flows never re-implement it.
+if (conflictNamesOnly || warnNamesOnly || verdictNames) {
+  const emit = []
   for (const line of lines) {
-    const m = line.match(/^  !! (@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]*)@[0-9][^ ]*/)
-    if (m) names.push(m[1])
+    const m = line.match(/^  (!!|\?\?) (@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]*)@[0-9][^ ]*/)
+    if (!m) continue
+    if (verdictNames) emit.push(`${m[1]}\t${m[2]}`)
+    else if (conflictNamesOnly && m[1] === '!!') emit.push(m[2])
+    else if (warnNamesOnly && m[1] === '??') emit.push(m[2])
   }
-  console.log(names.join('\n'))
+  console.log(emit.join('\n'))
 } else {
   console.log(lines.join('\n'))
 }
