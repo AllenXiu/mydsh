@@ -6,6 +6,7 @@ Windows 上"每次开机更新官方 dsh"靠 Startup 自启；macOS 很少重启
 |---|---|---|
 | `Startup\dsh-web-autostart.vbs` | `~/.dsh/bin/dsh-web-autostart.sh`（登录/重启时执行） | 先询问是否更新 → 再启动 Web UI |
 | — | `dsh-web-confirm-update.sh` | 对比官方版本；有新版弹窗询问（Update/Skip），无新版直接放行 |
+| — | `dsh-web-plugin-compat-check.mjs` | 升级前预检：扫描第三方插件对宿主版本的声明（engines/compatibility/peerDeps），冲突项会显示在确认弹窗里 |
 | 每次开机都自启 | 每次登录 + **每次屏幕解锁后**（watcher 检查到新版会弹窗征询） | 有机会跟进官方新版，但由你决定 |
 | — | `dsh-web-unlock-watcher`（Swift 编译，常驻） | 监听 `com.apple.screenIsUnlocked`/会话激活/唤醒 |
 | `restart-dsh-web.cmd` | `restart-dsh-web.sh` / `restart-dsh-web.command`（双击） | 一键重启：停 3080 端口 → 重启 → 轮询等待 |

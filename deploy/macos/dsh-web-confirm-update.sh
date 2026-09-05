@@ -52,13 +52,34 @@ fi
 # --- A newer official release exists: ask the human ---
 log "confirm-update: newer official dsh available ($INSTALLED -> $LATEST), prompting"
 
+# Pre-flight plugin compatibility report against the TARGET version, so the
+# dialog shows whether an upgrade would break installed plugins.
+COMPAT_CHECK="$HOME/.dsh/bin/dsh-web-plugin-compat-check.mjs"
+COMPAT_MSG=""
+if [ -f "$COMPAT_CHECK" ]; then
+  COMPAT_MSG="$(node "$COMPAT_CHECK" --host "$LATEST" 2>/dev/null || true)"
+  log "confirm-update: plugin compat vs $LATEST:"
+  log "$COMPAT_MSG"
+fi
+
 # Try a native GUI dialog first (macOS Aqua session).
 ANSWER=""
+rc=1
 if command -v osascript >/dev/null 2>&1; then
+  BODY="官方发布了新版本 dsh：
+当前  $INSTALLED
+最新  $LATEST
+
+—— 插件兼容性预检（升级到 $LATEST 后）——
+$COMPAT_MSG
+
+是否立即更新？"
+  # osascript heredoc: escape double quotes for AppleScript string safety.
+  BODY_ESC="$(printf '%s' "$BODY" | sed 's/"/\\"/g')"
   ANSWER="$(osascript <<EOF 2>/dev/null
 set appName to "DeepSeek Harness"
-set msg to "官方发布了新版本 dsh：\r当前 $INSTALLED\r最新 $LATEST\r\r是否立即更新？"
-display dialog msg with title appName buttons {"跳过", "更新"} default button "更新" cancel button "跳过" with icon caution
+set msg to "$BODY_ESC"
+display dialog msg with title appName buttons {"跳过", "更新"} default button "更新" cancel button "跳过" with icon caution giving up after 60
 EOF
 )"
   rc=$?
