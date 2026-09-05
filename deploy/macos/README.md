@@ -7,6 +7,7 @@ Windows 上"每次开机更新官方 dsh"靠 Startup 自启；macOS 很少重启
 | `Startup\dsh-web-autostart.vbs` | `~/.dsh/bin/dsh-web-autostart.sh`（登录/重启时执行） | 先询问是否更新 → 再启动 Web UI |
 | — | `dsh-web-confirm-update.sh` | 对比官方版本；有新版弹窗询问（Update/Skip），无新版直接放行 |
 | — | `dsh-web-plugin-lock.sh` | **插件锁**：用户确认更新后，自动禁用（disabled）与新版宿主冲突的插件，保证主项目正常升级运行；插件保留安装，可随时 unlock |
+| — | `dsh-update-progress`（Swift 编译） | **更新进度窗口**：点"更新"后显示转圈进度条与 npm 实时状态，完成后提示音并自动关闭 |
 | — | `dsh-web-plugin-compat-check.mjs` | 升级前预检：扫描第三方插件对宿主版本的声明（engines/compatibility/peerDeps），冲突项会显示在确认弹窗里 |
 | 每次开机都自启 | 每次登录 + **每次屏幕解锁后**（watcher 检查到新版会弹窗征询） | 有机会跟进官方新版，但由你决定 |
 | — | `dsh-web-unlock-watcher`（Swift 编译，常驻） | 监听 `com.apple.screenIsUnlocked`/会话激活/唤醒 |
@@ -33,7 +34,7 @@ bash deploy/macos/install.sh
 
 安装后：
 - Web UI 在登录时自动启动（等价 Windows Startup）。
-- 之后每次**重启 / 屏幕解锁**，若官方发布了新版本，会弹出对话框询问"是否更新"；**点更新时，与新版冲突的第三方插件会被自动禁用（锁住）**，保证主项目能正常升级运行；跳过则保持当前版本。
+- 之后每次**重启 / 屏幕解锁**，若官方发布了新版本，会弹出对话框询问"是否更新"；**点更新时，会弹出实时进度窗口**（转圈 + npm 输出状态），同时自动禁用（锁住）与新版冲突的第三方插件，保证主项目能正常升级运行；跳过则保持当前版本。
 - 被锁的插件只是停用（`disabled`），不会卸载；插件作者适配新版后可用 `unlock` 恢复。
 - 无 GUI/SSH 会话时默认**不升级**（fail-safe），避免后台静默变更。
 - 立即重启：`./restart-dsh-web.sh`（或双击 `restart-dsh-web.command`）。

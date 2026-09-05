@@ -26,10 +26,10 @@ PLIST_UNLOCK_SRC="$HERE/$LABEL_UNLOCK.plist"
 PLIST_SERVER_DST="$LA_DIR/$LABEL_SERVER.plist"
 PLIST_UNLOCK_DST="$LA_DIR/$LABEL_UNLOCK.plist"
 
-echo "==> 1/5 Prepare directories"
+echo "==> 1/6 Prepare directories"
 mkdir -p "$LA_DIR" "$BIN_DIR"
 
-echo "==> 2/5 Install autostart + unlock + confirm + lock scripts into $BIN_DIR"
+echo "==> 2/6 Install autostart + unlock + confirm + lock scripts into $BIN_DIR"
 cp "$HERE/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-autostart.sh"
 cp "$HERE/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-unlock.sh"
 cp "$HERE/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-confirm-update.sh"
@@ -37,19 +37,26 @@ cp "$HERE/dsh-web-plugin-lock.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
 cp "$HERE/dsh-web-plugin-compat-check.mjs" "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
 chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
 
-echo "==> 3/5 Compile the screen-unlock watcher"
+echo "==> 3/6 Compile the screen-unlock watcher and the update progress window"
 if [ ! -x "$BIN_DIR/dsh-web-unlock-watcher" ] || [ "$HERE/dsh-web-unlock-watcher.swift" -nt "$BIN_DIR/dsh-web-unlock-watcher" ]; then
   swiftc -O -o "$BIN_DIR/dsh-web-unlock-watcher" "$HERE/dsh-web-unlock-watcher.swift"
 fi
 chmod +x "$BIN_DIR/dsh-web-unlock-watcher"
 
-echo "==> 4/5 Install LaunchAgents"
+if [ ! -x "$BIN_DIR/dsh-update-progress" ] || [ "$HERE/dsh-update-progress.swift" -nt "$BIN_DIR/dsh-update-progress" ]; then
+  swiftc -O -o "$BIN_DIR/dsh-update-progress" "$HERE/dsh-update-progress.swift"
+fi
+chmod +x "$BIN_DIR/dsh-update-progress"
+
+echo "==> 4/6 Install LaunchAgents"
 # Substitute the real absolute home path into the plists.
 sed -e "s|/Users/allern|$USER_HOME|g" "$PLIST_SERVER_SRC" > "$PLIST_SERVER_DST"
 sed -e "s|/Users/allern|$USER_HOME|g" "$PLIST_UNLOCK_SRC" > "$PLIST_UNLOCK_DST"
 
-echo "==> 5/5 Make restart entries executable"
+echo "==> 5/6 Make restart entries executable"
 chmod +x "$HERE/../../restart-dsh-web.sh" "$HERE/../../restart-dsh-web.command" 2>/dev/null || true
+
+echo "==> 6/6 Boot the LaunchAgents"
 
 # Boot the agents now (also covers "start right now" via RunAtLoad).
 for LABEL in "$LABEL_SERVER" "$LABEL_UNLOCK"; do
@@ -77,8 +84,10 @@ echo "Installed. Behavior:"
 echo "  - web UI starts at login"
 echo "  - on every (re)start and screen unlock, a native dialog asks whether"
 echo "    the official @deepseek-ai/dsh should be updated - never a silent"
-echo "    upgrade. Skip keeps the running version; Update installs the newer"
-echo "    release and restarts the web UI."
+echo "    upgrade. Skip keeps the running version; Update shows a live"
+echo "    progress window while installing and restarts the web UI."
+echo "  - plugins conflicting with the new host version are disabled (locked)"
+echo "    automatically before the upgrade, so the main project always boots."
 echo "  - after a restart, the current token URL is at $HOME/.dsh/current-url.txt"
 echo "    (dsh 0.1.2 browser authentication changes the token per process)"
 echo "To restart it anytime:  $HERE/../../restart-dsh-web.sh"

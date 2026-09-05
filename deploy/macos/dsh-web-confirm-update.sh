@@ -106,12 +106,48 @@ if [ "$rc" = 0 ]; then
         bash "$LOCKER" lock "$LATEST" >> "$LOG" 2>&1 || \
           log "WARN confirm-update: plugin-lock reported an error; continuing"
       fi
-      # 2) Upgrade the main project.
-      if npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$LOG" 2>&1; then
+      # 2) Show a live progress window while npm installs the new dsh.
+      PROGRESS_BIN="$HOME/.dsh/bin/dsh-update-progress"
+      STATUS_FILE="$HOME/.dsh/update-progress.txt"
+      NPM_LIVE="$HOME/.dsh/npm-install.live.log"
+      PROGRESS_PID=""
+      if [ -x "$PROGRESS_BIN" ]; then
+        printf 'STATUS:UPDATE|正在更新官方 dsh（%s -> %s）...\n' "$INSTALLED" "$LATEST" > "$STATUS_FILE"
+        "$PROGRESS_BIN" "$STATUS_FILE" >/dev/null 2>&1 &
+        PROGRESS_PID=$!
+        log "confirm-update: progress window pid=$PROGRESS_PID"
+      fi
+
+      # Run npm, appending output to a live log; a follower writes the newest
+      # non-empty line into the status file so the window tracks progress.
+      : > "$NPM_LIVE"
+      npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$NPM_LIVE" 2>&1 &
+      NPM_PID=$!
+      while kill -0 "$NPM_PID" 2>/dev/null; do
+        LAST="$(grep -v '^$' "$NPM_LIVE" 2>/dev/null | tail -1)"
+        if [ -n "$LAST" ] && [ -n "$PROGRESS_PID" ]; then
+          printf 'STATUS:UPDATE|npm: %s\n' "$LAST" > "$STATUS_FILE"
+        fi
+        sleep 0.5
+      done
+      wait "$NPM_PID"
+      NPM_RC=$?
+      if [ -n "$PROGRESS_PID" ]; then
+        LAST="$(grep -v '^$' "$NPM_LIVE" 2>/dev/null | tail -1)"
+        [ -z "$LAST" ] || printf 'STATUS:UPDATE|npm: %s\n' "$LAST" > "$STATUS_FILE"
+      fi
+
+      if [ "$NPM_RC" -eq 0 ]; then
         log "confirm-update: updated to $(dsh --version 2>/dev/null || echo unknown)"
+        if [ -n "$PROGRESS_PID" ]; then
+          printf 'STATUS:DONE|更新完成，当前版本：%s\n' "$(dsh --version 2>/dev/null)" > "$STATUS_FILE"
+        fi
         exit 1
       else
         log "WARN confirm-update: npm install failed; keeping $INSTALLED"
+        if [ -n "$PROGRESS_PID" ]; then
+          printf 'STATUS:ERROR|npm 更新失败，请查看 %s\n' "$LOG" > "$STATUS_FILE"
+        fi
         exit 0
       fi
       ;;

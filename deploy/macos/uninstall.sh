@@ -29,6 +29,7 @@ rm -f "$BIN_DIR/dsh-web-confirm-update.sh"
 rm -f "$BIN_DIR/dsh-web-plugin-lock.sh"
 rm -f "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
 rm -f "$BIN_DIR/dsh-web-unlock-watcher"
+rm -f "$BIN_DIR/dsh-update-progress"
 rm -f "$HOME/.dsh/current-url.txt"
 
 echo "Uninstalled. The running dsh web process (if any) is left untouched."
