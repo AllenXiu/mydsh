@@ -1,179 +1,107 @@
-# Windows 部署（与 macOS 同等的"升级前人工确认 + 冲突插件自动卸载"能力）
+# Windows 部署（仓库即部署源：开机直读 deploy/，git pull 即生效）
 
-> 适用：想在本仓库当前的 Windows 部署（`restart-dsh-web.cmd` + Startup 自启 VBS）上，
-> 获得 macOS 侧已实现的**弹窗确认更新、冲突插件预检、冲突插件自动卸载、更新进度提示**。
-> 本文档不涉及本仓库内 `deploy/macos/` 的任何改动——那些是 macOS 专用，**不会影响 Windows**。
+> Windows 的 dsh web 通过 **Startup 自启**实现"每次开机检查官方新版、有人工确认、冲突插件自动卸载、升级时显示进度窗"。
+> 采用**仓库直读**：开机时 Startup 里的 VBS 只做一件事——运行本仓库 `deploy/windows/dsh-autostart.cmd`。
+> 之后的所有逻辑（更新确认、预检、进度窗、启动 web）都从**本仓库目录**执行。
+> 因此在 Mac 上改好逻辑 → commit/push → Windows 上 `git pull` → 下次开机即用新代码，
+> 无需任何拷贝/安装步骤（只需 clone/移动仓库后跑一次 install.ps1 刷新 Startup 指向）。
 
-## 1. 现状对照
+## 0. 目录布局：deploy/ 下的平台目录 + 公共共享目录
 
-| 能力 | macOS（已实现，deploy/macos/） | Windows（现状） | Windows 需要的改动 |
-|---|---|---|---|
-| 登录/开机自启 | launchd LaunchAgent | Startup 文件夹 `dsh-web-autostart.vbs` | 无需改，已具备 |
-| 一键重启 | `restart-dsh-web.sh` / `.command` | `restart-dsh-web.cmd` | 无需改，已具备 |
-| 每次启动检查官方新版 | `dsh-web-autostart.sh` 调用 `dsh-web-confirm-update.sh` | VBS 直接 `npm install -g @latest`（**静默升级**） | 需引入确认逻辑 |
-| 检测到新版 → 弹窗询问 | osascript 原生对话框 | 无（直接升） | 需 PowerShell 弹窗 |
-| 冲突插件预检 | `dsh-web-plugin-compat-check.mjs`（Node） | 无 | **可直接复用此文件** |
-| 冲突插件自动卸载 | confirm 脚本内 `dsh plugin remove` | 无 | 需在确认脚本中调用同一条命令 |
-| 更新进度提示 | `dsh-update-progress`（Swift 窗口） | 无 | 需 PowerShell 进度提示（可选） |
-| 浏览器 token URL | `~/.dsh/current-url.txt` | 0.1.2 同样按进程生成 token | 建议在启动日志/命令窗打印 URL |
+```
+deploy/
+├── windows/    Windows 启动/更新逻辑（ps1/cmd/vbs/install/uninstall，仓库直读）
+├── macos/      macOS 启动/更新逻辑（sh/swift/plist，install.sh 拷到 ~/.dsh/bin）
+└── shared/     ★ 跨平台共享逻辑的唯一来源（当前：dsh-web-plugin-compat-check.mjs）
+```
 
-### 已提交内容是否影响 Windows？
-不会。`git log origin/master..HEAD` 的全部改动都集中在 `deploy/macos/` 目录：
-`dsh-web-autostart.sh / dsh-web-unlock.sh / dsh-web-confirm-update.sh / dsh-web-plugin-lock.sh /
-dsh-web-plugin-compat-check.mjs / dsh-update-progress.swift / install.sh / uninstall.sh / README.md`
-Windows 端使用的 `restart-dsh-web.cmd`（仓库根）与 Startup VBS 均未被修改。
+两个平台各自需要一份"跨平台纯 Node"的兼容预检逻辑，旧结构在 deploy/windows 和
+deploy/macos 各放一份副本，容易漂移。**现在只有 deploy/shared/ 一份**：
+- Windows：boot 时 ps1 直接引用 `..\shared\`；
+- macOS：install.sh 从 shared 拷贝到 `~/.dsh/bin`（安装后脚本继续引用已安装路径，行为不变）。
 
-## 2. Windows 复用 macOS 逻辑的最小方案
+## 1. 开机链路（操作系统实际执行）
 
-Windows 与 macOS 的差异只在**"弹窗/交互/后台触发"这些系统耦合层**；
-版本比较、冲突判定、卸载动作**同一套逻辑可直接复用**（依赖 Node + 官方 dsh，Windows 同样具备）。
+```
+登录
+ → Startup\dsh-web-autostart.vbs        ← 机器本地，install.ps1 生成，只含一行仓库路径
+ → <repo>\deploy\windows\dsh-autostart.cmd    ← 仓库内，git 管理
+     ├─ powershell -STA dsh-web-update.ps1      ← 仓库内：比对版本 → 预检 → 弹窗 → 卸载冲突 → 进度窗升级
+     │      └─ 调用 deploy\shared\dsh-web-plugin-compat-check.mjs（单份跨平台源）
+     └─ call dsh web（全局 npm 官方包）
+```
 
-### 2.1 可直接复用的文件
-
-`deploy/macos/dsh-web-plugin-compat-check.mjs` —— 纯 Node，跨平台。
-- 输入：`--host <目标版本>`（要升级到的 dsh 版本）
-- 输出：三行状态，`CONFLICT` 行表示与目标版本不兼容
-- Windows 用法：`node dsh-web-plugin-compat-check.mjs --host 0.1.2-rc.1`
-- 需先 `git pull` 拿到此文件，或直接复制到 Windows profile 目录旁。
-
-### 2.2 Windows 需要新写的组件
-
-| 组件 | macOS 用 | Windows 替代 |
+| 文件 | 位置 | 角色 |
 |---|---|---|
-| 确认弹窗 | `osascript` | PowerShell `System.Windows.Forms.MessageBox` |
-| 进度提示 | Swift AppKit 窗口 | PowerShell `Write-Progress` 或简单 MessageBox（可选） |
-| 自启触发 | LaunchAgent + 解锁 watcher | Startup VBS（已有，改为调用确认脚本） |
-| 日志 | `~/.dsh/autostart-update.log` | 同一路径（`%USERPROFILE%\.dsh\autostart-update.log`，已存在） |
+| `dsh-autostart.cmd` | deploy/windows/ | 启动器：自定位（`%~dp0`）找仓库里的 ps1 → 跑更新确认 → 解析 dsh → 启动 web |
+| `dsh-web-update.ps1` | deploy/windows/ | 核心：`dsh --version` vs `npm view @deepseek-ai/dsh@latest` → 有新版跑 compat 预检 → MessageBox 询问（冲突插件单列）→ Yes 逐个 `dsh plugin --profile web remove` 卸载冲突 → WinForms 进度窗轮转阶段文案的同时 `npm install -g` 升级 |
+| `dsh-web-plugin-compat-check.mjs` | **deploy/shared/**（唯一来源） | 升级前预检（纯 Node、跨平台）：扫描 web profile 第三方插件对目标宿主的声明（engines.dsh / compatibility.dshReleases / @deepseek-ai peerDeps），输出 `CONFLICT` 行；`--conflict-names` 模式直接输出冲突包名（一行一个），Windows 与 macOS 都不再各自实现解析正则 |
+| `dsh-web-autostart.vbs` | deploy/windows/ | **模板**（占位符 `<REPO_ROOT>`）：install.ps1 把真实仓库路径替换后写入 Startup |
+| `install.ps1` | deploy/windows/ | 把 Startup VBS 注册/刷新为指向本仓库；顺带删除旧的 detached 副本（§6） |
+| `uninstall.ps1` | deploy/windows/ | 移除 Startup VBS，停止开机自启；仓库文件不动 |
 
-### 2.3 推荐的 Windows 目录结构
+仓库根的 `restart-dsh-web.cmd`（已跟踪）＝一键重启（停 3080 → 经 Startup VBS → 走同一条仓库链路 → 轮询等待）。
 
-```
-%USERPROFILE%\.dsh\bin\
-    dsh-web-update.ps1              # 新增：确认更新 + 预检 + 卸载冲突 + 升级（核心）
-    dsh-web-plugin-compat-check.mjs # 复用（复制自 deploy/macos/）
-    dsh-web-autostart.vbs           # 已有 Startup 自启，改为调用 dsh-web-update.ps1
-restart-dsh-web.cmd                 # 已有，不用改（它走 VBS）
-```
+## 2. 能力对照（Windows / macOS）
 
-## 3. 核心脚本参考：`dsh-web-update.ps1`
+| 能力 | Windows（deploy/windows/） | macOS（deploy/macos/） |
+|---|---|---|
+| 登录/开机自启 | Startup VBS（机器本地）→ 仓库 cmd | launchd LaunchAgent + 解锁 watcher |
+| 每次启动检查官方新版 | 每次开机经仓库链路运行 `dsh-web-update.ps1` | 每次登录/重启/解锁 |
+| 弹窗询问 | PowerShell `System.Windows.Forms.MessageBox`（Yes/No） | osascript 原生对话框 |
+| 冲突插件预检 | 共同引用 **deploy/shared/dsh-web-plugin-compat-check.mjs** | 同左（install.sh 拷到 ~/.dsh/bin） |
+| 冲突插件自动卸载 | ps1 内逐个 remove | confirm 脚本内同一条命令 |
+| 升级进度提示 | ps1 内 WinForms 置顶小窗 | `dsh-update-progress`（Swift） |
+| 一键重启 | `restart-dsh-web.cmd`（仓库根） | `restart-dsh-web.sh` / `.command` |
+| 日志 | `%USERPROFILE%\.dsh\autostart-update.log` | `~/.dsh/autostart-update.log` |
+| 版本线 | `latest`（0.1.2 主线），ps1 顶部 `param([string]$Tag='latest')` | `DSH_TAG`（默认 `latest`） |
 
-逻辑与 macOS `dsh-web-confirm-update.sh` 对齐：
-1. 读当前版本 `dsh --version`
-2. 读官方最新 `npm view @deepseek-ai/dsh@latest version`
-3. 相同 → 直接返回（无提示）
-4. 不同 → 运行 compat-check.mjs 得到冲突清单
-5. MessageBox 询问（冲突项醒目列出）
-6. 点"更新"：逐个 `dsh plugin --profile web remove <冲突插件>`，再 `npm install -g @deepseek-ai/dsh@latest`
-7. 写日志 `%USERPROFILE%\.dsh\autostart-update.log`
+## 3. 安装 / 卸载
+
+仅在 **clone/移动仓库后**需要注册 Startup 指向（此后改逻辑只需 git pull，不用再跑）：
+
 ```powershell
-# dsh-web-update.ps1
-# 用法: powershell -ExecutionPolicy Bypass -File dsh-web-update.ps1
-$ErrorActionPreference = 'Stop'
-$homeDir = $env:USERPROFILE
-$log = "$homeDir\.dsh\autostart-update.log"
-$profileDir = "$homeDir\.dsh\profiles\web"
-$compatCheck = Join-Path $PSScriptRoot 'dsh-web-plugin-compat-check.mjs'
-function Log($m) { Add-Content -Path $log -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m) }
-
-Log '===== dsh web update check begin ====='
-$installed = (dsh --version 2>$null | Out-String).Trim()
-$latest = (npm view @deepseek-ai/dsh@latest version 2>$null | Out-String).Trim()
-Log "installed=$installed latest=$latest"
-if ($installed -eq $latest) { Log 'already up to date - no prompt'; exit 0 }
-if (-not $latest) { Log 'registry unreachable - keeping current'; exit 0 }
-
-# 1) 冲突预检
-$compat = node $compatCheck --host $latest 2>$null | Out-String
-Log "compat vs $latest`n$compat"
-$conflicts = ($compat -split "`n") | Where-Object { $_ -match 'CONFLICT' }
-
-# 2) 弹窗询问（冲突项醒目列出）
-Add-Type -AssemblyName System.Windows.Forms
-if ($conflicts) {
-    $msg = "官方发布了新版本 dsh：$installed → $latest`n`n" +
-           "⚠ 升级将自动卸载以下不兼容插件：`n    " + ($conflicts -join "`n    ") +
-           "`n`n确认升级？"
-} else {
-    $msg = "官方发布了新版本 dsh：$installed → $latest`n`n✅ 已安装插件均兼容新版`n`n是否立即更新？"
-}
-$r = [System.Windows.Forms.MessageBox]::Show($msg, 'DeepSeek Harness 更新',
-      [System.Windows.Forms.MessageBoxButtons]::YesNo,
-      [System.Windows.Forms.MessageBoxIcon]::Warning)
-if ($r -ne 'Yes') { Log 'user chose No - keeping current'; exit 0 }
-
-# 3) 卸载冲突插件（先匹配 scoped/非 scoped 包名整段，再去掉尾部 @版本）
-if ($conflicts) {
-    $conflictNames = $conflicts | ForEach-Object {
-        if ($_ -match '(@[a-z0-9._-]+/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]*)@[0-9][^ ]*') {
-            ($matches[1] -replace '@[0-9][^@]*$', '')
-        }
-    } | Sort-Object -Unique
-    foreach ($name in $conflictNames) {
-        Log "uninstalling conflicting plugin $name"
-        Push-Location $profileDir
-        try { dsh plugin --profile web remove $name 2>&1 | Out-Null }
-        catch { Log "WARN remove $name failed" }
-        Pop-Location
-    }
-}
-
-# 4) 升级 + 日志
-Log "upgrading to $latest"
-npm install -g "@deepseek-ai/dsh@latest" 2>&1 | ForEach-Object { Log "npm: $_" }
-Log "updated to $((dsh --version | Out-String).Trim())"
-Log '===== dsh web update check end ====='
-exit 1   # 1 = 更新完成，调用方可据此重启 web
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/uninstall.ps1
 ```
 
-> 提示：`compat-check.mjs` 输出的冲突行形如
-> `  !! @scope/pkg@1.2.3  CONFLICT on dsh X: reason`。
-> PowerShell 提取包名建议用两步：先匹配 `@scope/name@ver`（scoped）或 `name@ver`（非 scoped）整段，
-> 再去掉尾部 `@版本`：
-> ```powershell
-> $names = $conflicts | ForEach-Object {
->     if ($_ -match '(@[a-z0-9._-]+/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]*)@[0-9][^ ]*') {
->         ($matches[1] -replace '@[0-9][^@]*$', '')
->     }
-> } | Sort-Object -Unique
-> ```
-> 与 macOS `dsh-web-plugin-lock.sh` 中使用的提取逻辑保持一致。
+立即走一遍完整链路：`restart-dsh-web.cmd`（仓库根）。
 
-## 4. 把确认逻辑接入 Windows 自启/重启
+## 4. 手动命令 / 验证
 
-### 4.1 Startup VBS（登录自启）
-把 VBS 中"直接 npm install"的步骤换成调用 PowerShell 脚本（示意）：
-```vbs
-' dsh-web-autostart.vbs（在 Startup 文件夹中的现有文件，改启动步骤）
-Set shell = CreateObject("WScript.Shell")
-' 1) 先询问/执行更新（阻塞等确认；返回码不适用则改为在 ps1 内自管重启）
-shell.Run "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & _
-    "%USERPROFILE%\.dsh\bin\dsh-web-update.ps1""", 0, True
-' 2) 启动 web（原有逻辑，建议加 --no-open 并把 token URL 落到 current-url.txt）
+```powershell
+# 预检某个目标版本下当前插件兼容性（读 deploy/shared 这份）
+node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本>
+node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --conflict-names  # 只要冲突包名
+
+# 手动触发一次"检查→询问→升级"
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-update.ps1
 ```
-`dsh-web-update.ps1` 内部完成"确认→卸载冲突→升级"；VBS 只需随后启动 web。
 
-### 4.2 手动重启
-`restart-dsh-web.cmd` 第 3 步本来就调用 VBS 重启 → VBS 换成确认脚本后，手动重启也会先询问。
+`dsh-web-update.ps1` 退出码：`0` = 已最新 / 用户点 No / registry 不可达；`1` = 已执行升级（调用方据此重启 web）。
 
-## 5. Windows 测试步骤（在 Windows 电脑上）
+## 5. 已知冲突与版本线说明
 
-1. `git pull`（或手动复制）取得 `deploy/macos/dsh-web-plugin-compat-check.mjs`
-2. 把 `dsh-web-update.ps1` 与 compat-check 放到 `%USERPROFILE%\.dsh\bin\`
-3. 验证预检：`node dsh-web-plugin-compat-check.mjs --host 0.1.2-rc.1`（应列出当前插件兼容性）
-4. 手动触发一次：`powershell -ExecutionPolicy Bypass -File dsh-web-update.ps1`
-   - 若宿主已是官方最新 → 直接退出（日志记 `already up to date`）
-   - 若低于官方最新 → 弹 MessageBox → 点 Yes 验证升级 +（如有冲突插件）自动卸载
-5. 浏览器打开 `http://127.0.0.1:3080` 确认 web 正常、冲突插件已消失
-6. 确认无误后，再把 Startup VBS 换成调用确认脚本（4.1）
+- 曾与 0.1.1 深度绑定、与 0.1.2 冲突的 `@kenz1117/dsh-ui-usage-billing`（1.0.10 及更早）在升级到 0.1.2 时被自动卸载并单列在弹窗中。
+- `@linxin666/dsh-web-all` < 0.3.9 的 engines 虽写 `>=0.1.1-rc.1`，但其固定依赖 `dsh-better-sidebar` 0.15.x 引用 0.1.2 已删除的 `settingsNamespace` 导出——**实测在 0.1.2 崩溃**。compat-check 内置该**已知运行时冲突规则**（`web-all <0.3.9` 对 `0.1.2+` 判 CONFLICT）。需要升回 0.1.2 兼容版时手动 `dsh plugin --profile web add @linxin666/dsh-web-all@0.3.14 -E`。
+- 升级到更高主线时先跑一次预检，把新出现的 `CONFLICT` 纳入弹窗预期。
 
-## 6. 常见差异注意点
+## 6. 维护注意点
 
-- **token 认证（dsh ≥ 0.1.2）**：Windows 与 macOS 一样，每次进程重启 token 变化。
-  启动命令会打印 `?token=...` URL；自启/重启脚本应把该 URL 落到
-  `%USERPROFILE%\.dsh\current-url.txt`（当前 Windows 部署可能还没有，建议补）。
-- **路径**：脚本一律用 `%USERPROFILE%` / `$env:USERPROFILE`，勿硬编码 `C:\Users\xxx`。
-- **PATH**：确认脚本运行前保证 `dsh`/`npm`/`node` 在 PATH（自启环境 PATH 可能不含；
-  在 ps1 开头显式 prepend 对应 bin 目录最稳）。
-- **官方版本线**：`latest` 目前 = 0.1.2 线；若将来需要跟 `next`，把两处 `@latest` 换成对应 tag，
-  与 macOS 脚本的 `DSH_TAG` 保持一致即可。
+- **共享逻辑只有一份（deploy/shared/）**：Windows boot 与 macOS install 都消费它，不存在"两份要一起改"。
+  - Windows 侧不要往 deploy/windows 里放 compat-check 副本；改共享文件只改 `deploy/shared/dsh-web-plugin-compat-check.mjs`。
+  - macOS 改完仓库代码后需在 mac 上重跑 `bash deploy/macos/install.sh` 刷新 `~/.dsh/bin`（macOS 是"安装式"部署，与 Windows 的仓库直读不同）。
+- **token 认证（dsh ≥ 0.1.2）**：每次进程重启 token 变化，`dsh web` 启动时打印 `?token=...` URL，自启日志可查。
+- **路径**：脚本一律用 `%USERPROFILE%`，不硬编码 `C:\Users\xxx`。
+- **PATH**：登录自启环境可能不含 node/npm/dsh；`dsh-autostart.cmd` 用 `where dsh` 探测并回退常见全局前缀，`dsh-web-update.ps1` 开头也会把 node bin 前缀 prepend 进 PATH。
+- **编码**：`dsh-web-update.ps1` 含中文文案，必须保持 **UTF-8 with BOM**（Windows PowerShell 5.1 否则按 ANSI 误读成乱码）。cmd/install/uninstall 为纯 ASCII。
+- **仓库直读的前提**：仓库 checkout 路径稳定（本机约定不变更/删除）。若换路径，改完跑一次 `install.ps1` 即可刷新 Startup 指向。
+- **"detached 副本"已废弃**：早期方案把脚本复制进 `%USERPROFILE%\.dsh\bin` 与 `.dsh\`。新 install.ps1 会删除它们；若手动清理，删除 `.dsh\bin\dsh-web-update.ps1`、`.dsh\bin\dsh-web-plugin-compat-check.mjs`、`.dsh\dsh-autostart.cmd` 即可。
 
+## 7. 升级到 0.1.2+ 后恢复全家桶插件（可选）
+
+0.1.2 线要求 `dsh-web-all` ≥ 0.3.9（better-sidebar 0.18.x）、`billing` 兼容版。升级完成后如需恢复：
+```powershell
+dsh plugin --profile web add @linxin666/dsh-web-all@0.3.14 -E
+dsh plugin --profile web add @kenz1117/dsh-ui-usage-billing@<0.1.2兼容版> -E
+```

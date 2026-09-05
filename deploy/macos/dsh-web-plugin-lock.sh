@@ -112,15 +112,11 @@ lock_cmd() {
     exit 1
   fi
 
-  local compat conflicts
-  compat="$(node "$COMPAT_CHECK" --host "$host_version" 2>/dev/null || true)"
-  # Extract plugin package names (scoped like @scope/name and bare like name)
-  # from CONFLICT rows of the compat report.
-  conflicts="$(printf '%s\n' "$compat" \
-    | grep 'CONFLICT' \
-    | grep -oE '@[a-z0-9._-]+/[a-z0-9._-]+@[0-9][^ ]*|[a-z0-9][a-z0-9._-]*@[0-9][^ ]*' \
-    | sed -E 's/@[0-9][^@]*$//' \
-    | sort -u)"
+  # Conflicting plugin package names come straight from the shared compat-check
+  # (its --conflict-names mode) so the extraction regex is not re-implemented
+  # in bash here (single source: deploy/shared/dsh-web-plugin-compat-check.mjs).
+  local conflicts
+  conflicts="$(node "$COMPAT_CHECK" --host "$host_version" --conflict-names 2>/dev/null || true)"
 
   if [ -z "$conflicts" ]; then
     log "lock: no conflicts detected for dsh $host_version - nothing to lock"

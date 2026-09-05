@@ -135,10 +135,10 @@ if [ "$rc" = 0 ]; then
       #    down. (Previously these were locked via cordis disable; removal is
       #    cleaner and keeps the profile manifest in sync.)
       if [ -n "$CONFLICT_LINES" ]; then
-        CONFLICT_NAMES="$(printf '%s' "$CONFLICT_LINES" \
-          | grep -oE '@[a-z0-9._-]+/[a-z0-9._-]+@[0-9][^ ]*|[a-z0-9][a-z0-9._-]*@[0-9][^ ]*' \
-          | sed -E 's/@[0-9][^@]*$//' \
-          | sort -u)"
+        # Conflicting plugin names come from the shared compat-check itself
+        # (--conflict-names mode), so the extraction regex lives in ONE place
+        # (deploy/shared/dsh-web-plugin-compat-check.mjs) for both platforms.
+        CONFLICT_NAMES="$(node "$COMPAT_CHECK" --host "$LATEST" --conflict-names 2>/dev/null || true)"
         for PLUGIN in $CONFLICT_NAMES; do
           log "confirm-update: uninstalling conflicting plugin $PLUGIN"
           ( cd "$HOME/.dsh/profiles/web" \

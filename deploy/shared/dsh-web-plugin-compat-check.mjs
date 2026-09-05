@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dsh-web-plugin-compat-check.mjs
+// dsh-web-plugin-compat-check.mjs  (cross-platform, SINGLE SOURCE at deploy/shared/)
 // Pre-flight: check every third-party plugin in the web profile against a
 // TARGET dsh host version and report which ones would conflict.
 //
@@ -9,17 +9,22 @@
 //   3. peerDependencies["@deepseek-ai/dsh-*"] - semver ranges vs host subpackages
 //
 // Usage:
-//   node dsh-web-plugin-compat-check.mjs [--profile <dir>] [--target <version>]
-//   --target defaults to the installed host version; pass the prospective NEW
-//   version (e.g. the value the confirm dialog is about to install) to preview
-//   conflicts AFTER an upgrade.
+//   node dsh-web-plugin-compat-check.mjs [--profile <dir>] [--host <version>] [--conflict-names]
+//   --host defaults to the installed host version; pass the prospective NEW
+//   version to preview conflicts AFTER an upgrade.
+//   --conflict-names: print only the bare package names of CONFLICT plugins
+//   (one per line) instead of the human report.
 //
+// Cross-platform: locates the dsh install via `npm prefix -g` (win32) or the
+// resolved dsh bin (macOS/Linux), and loads semver from the dsh installation's
+// own node_modules.
 // Exit 0 always (report text is the output); the caller renders it.
 
-import { createRequire } from 'node:module'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { execSync } from 'node:child_process'
 
 const require = createRequire(import.meta.url)
 
@@ -30,32 +35,44 @@ const argVal = (flag) => {
 }
 
 const profileDir = argVal('--profile') || join(homedir(), '.dsh/profiles/web')
-const host = argVal('--host')
+const host = argVal('--host') || argVal('--target')
+const conflictNamesOnly = args.includes('--conflict-names')
 
-// --- locate semver from the host installation (dsh ships semver) ---
-import { execSync } from 'node:child_process'
+// --- locate the dsh install (cross-platform) ---
 function dshRoot() {
-  // Resolve the real global dsh install (nvm's bin/dsh -> .../node_modules/@deepseek-ai/dsh)
   try {
-    const bin = execSync('command -v dsh', { encoding: 'utf8' }).trim()
-    const real = execSync(`readlink -f "${bin}"`, { encoding: 'utf8' }).trim()
-    // .../versions/node/v22.23.2/bin/dsh -> .../lib/node_modules/@deepseek-ai/dsh/bin.js
-    const libIndex = real.indexOf('lib/node_modules')
-    if (libIndex !== -1) {
-      return real.slice(0, libIndex + 'lib/node_modules'.length) + '/@deepseek-ai/dsh'
+    if (process.platform === 'win32') {
+      const prefix = execSync('npm prefix -g', { encoding: 'utf8', shell: process.env.ComSpec || 'cmd.exe' }).trim()
+      const p = join(prefix, 'node_modules', '@deepseek-ai', 'dsh')
+      if (existsSync(join(p, 'package.json'))) return p
+    } else {
+      const bin = execSync('command -v dsh', { encoding: 'utf8' }).trim()
+      const real = execSync(`readlink -f "${bin}"`, { encoding: 'utf8' }).trim()
+      const libIndex = real.indexOf('lib/node_modules')
+      if (libIndex !== -1) {
+        return real.slice(0, libIndex + 'lib/node_modules'.length) + '/@deepseek-ai/dsh'
+      }
     }
   } catch { /* fall through */ }
   return undefined
 }
 const DSH_ROOT = dshRoot()
 const HOST_DEP_ROOT = DSH_ROOT ? join(DSH_ROOT, 'node_modules') : undefined
+
+// --- load semver from the dsh install's dependency tree ---
 function loadSemver() {
-  if (!HOST_DEP_ROOT) return undefined
-  try {
-    return require(join(HOST_DEP_ROOT, 'semver'))
-  } catch {
-    return undefined
+  if (!DSH_ROOT) return undefined
+  const cands = [
+    join(DSH_ROOT, 'node_modules', 'semver'),
+    join(DSH_ROOT, '..', 'node_modules', 'semver'),
+    join(homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', 'semver'),
+  ]
+  for (const c of cands) {
+    try {
+      if (existsSync(join(c, 'package.json'))) return require(c)
+    } catch { /* next */ }
   }
+  try { return require('semver') } catch { return undefined }
 }
 const semver = loadSemver()
 
@@ -71,9 +88,6 @@ function readJson(p) {
 let hostVersion = host
 let hostSubversionForTarget = undefined
 if (hostVersion) {
-  // Simulating an upgrade: dsh publishes its @deepseek-ai/dsh-* subpackages in
-  // lockstep with the main package version, so peerDep checks against the
-  // target use the target version for every subpackage.
   hostSubversionForTarget = () => hostVersion
 } else {
   const dshPkg = DSH_ROOT ? readJson(join(DSH_ROOT, 'package.json')) : undefined
@@ -90,7 +104,14 @@ function hostSubversion(name) {
   }
   return hostSubversionCache.get(bare)
 }
-
+const satisfies = (range, version) => {
+  if (!semver || !range || !version) return undefined
+  try {
+    return semver.satisfies(version, range, { includePrerelease: true })
+  } catch {
+    return undefined
+  }
+}
 
 // --- which profile deps are third-party plugins (not @deepseek-ai scope) ---
 const profile = readJson(join(profileDir, 'package.json'))
@@ -100,17 +121,9 @@ const thirdParty = depNames.filter(
   (n) => !n.startsWith('@deepseek-ai/') && bundles.includes(n),
 )
 
-const satisfies = (range, version) => {
-  if (!semver || !range || !version) return undefined
-  try {
-    // prerelease handling: 0.1.2-rc.1 must be allowed to match ^0.1.2-alpha.2
-    return semver.satisfies(version, range, { includePrerelease: true })
-  } catch {
-    return undefined
-  }
-}
-
 const lines = []
+// Host on the 0.1.2 line? (prerelease-agnostic: "0.1.2-rc.1", "0.1.2-alpha.x", ...)
+const hostIs012 = /^0\.1\.2/.test(hostVersion)
 for (const name of thirdParty) {
   const pkg = readJson(join(profileDir, 'node_modules', name, 'package.json'))
   if (!pkg) {
@@ -119,12 +132,7 @@ for (const name of thirdParty) {
   }
   const version = pkg.version ?? '?'
 
-  // signal 1: dsh.engines.dsh
   const dshEngineRange = pkg.dsh?.engines?.dsh
-
-  // signal 2: dsh.compatibility.dshReleases - an explicit, maintained list.
-  // A target version absent from the list is a strong signal (the author
-  // deliberately enumerated supported releases and did not include this one).
   const releases = pkg.dsh?.compatibility?.dshReleases
   let releaseState
   let releaseDeclared = false
@@ -135,12 +143,11 @@ for (const name of thirdParty) {
       : undefined
   }
 
-  // signal 3: @deepseek-ai peerDeps
   const peerDeps = pkg.peerDependencies ?? {}
   const hostPeerEntries = Object.entries(peerDeps).filter(([k]) => k.startsWith('@deepseek-ai/'))
   const peerIssues = []
   for (const [dep, range] of hostPeerEntries) {
-    if (dep === '@deepseek-ai/cordis' || dep === '@deepseek-ai/schemastery') continue // infra
+    if (dep === '@deepseek-ai/cordis' || dep === '@deepseek-ai/schemastery') continue
     const installed = hostSubversion(dep)
     const ok = installed ? satisfies(range, installed) : undefined
     if (ok === false) {
@@ -154,11 +161,18 @@ for (const name of thirdParty) {
     problems.push(`engines.dsh requires ${dshEngineRange}`)
   }
   if (releaseDeclared && releaseState !== 'compatible') {
-    // Maintained list exists but this host version is absent or not marked
-    // compatible -> treat as conflicting so the upgrade locks the plugin.
     problems.push(`compatibility list does not cover dsh ${hostVersion}`)
   }
   problems.push(...peerIssues)
+
+  // Known transitive/runtime conflicts that package manifests cannot express.
+  // Empirically: @linxin666/dsh-web-all < 0.3.9 pins dsh-better-sidebar 0.15.x,
+  // whose server half imports `settingsNamespace` from @deepseek-ai/dsh-settings
+  // - an export removed in dsh 0.1.2. So web-all < 0.3.9 crashes on a 0.1.2+
+  // host even though its engines claim >=0.1.1-rc.1.
+  if (hostIs012 && name === '@linxin666/dsh-web-all' && version && semver && semver.lt(version, '0.3.9')) {
+    problems.push('known: web-all <0.3.9 pins better-sidebar 0.15.x which needs settingsNamespace removed in dsh 0.1.2+')
+  }
 
   if (problems.length > 0) {
     lines.push(`  !! ${name}@${version}  CONFLICT on dsh ${hostVersion}: ${problems.join('; ')}`)
@@ -170,4 +184,17 @@ for (const name of thirdParty) {
 }
 
 if (thirdParty.length === 0) lines.push('  (no third-party plugins installed)')
-console.log(lines.join('\n'))
+
+// --conflict-names delegates name extraction to this one file, so the macOS
+// (bash) and Windows (PowerShell) flows do not re-implement the same regex.
+if (conflictNamesOnly) {
+  const names = []
+  for (const line of lines) {
+    const m = line.match(/^  !! (@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9][a-z0-9._-]*)@[0-9][^ ]*/)
+    if (m) names.push(m[1])
+  }
+  console.log(names.join('\n'))
+} else {
+  console.log(lines.join('\n'))
+}
+

@@ -16,6 +16,7 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+SHARED_DIR="$(cd "$HERE/../shared" && pwd)"
 USER_HOME="$HOME"
 LABEL_SERVER="com.allern.dsh-web"
 LABEL_UNLOCK="com.allern.dsh-web-unlock"
@@ -34,7 +35,7 @@ cp "$HERE/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-autostart.sh"
 cp "$HERE/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-unlock.sh"
 cp "$HERE/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-confirm-update.sh"
 cp "$HERE/dsh-web-plugin-lock.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
-cp "$HERE/dsh-web-plugin-compat-check.mjs" "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
+cp "$SHARED_DIR/dsh-web-plugin-compat-check.mjs" "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
 chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
 
 echo "==> 3/6 Compile the screen-unlock watcher and the update progress window"

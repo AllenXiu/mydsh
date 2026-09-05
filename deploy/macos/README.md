@@ -8,7 +8,7 @@ Windows 上"每次开机更新官方 dsh"靠 Startup 自启；macOS 很少重启
 | — | `dsh-web-confirm-update.sh` | 对比官方版本；有新版弹窗询问（Update/Skip），无新版直接放行 |
 | — | `dsh-web-plugin-lock.sh` | **插件锁（手动工具）**：可手动禁用/恢复指定插件；升级流程默认"直接卸载"冲突插件，此脚本保留用于手动管理 |
 | — | `dsh-update-progress`（Swift 编译） | **更新进度窗口**：点"更新"后显示转圈进度条与 npm 实时状态，完成后提示音并自动关闭 |
-| — | `dsh-web-plugin-compat-check.mjs` | 升级前预检：扫描第三方插件对宿主版本的声明（engines/compatibility/peerDeps），冲突项在弹窗中**单独成区醒目显示** |
+| — | `deploy/shared/dsh-web-plugin-compat-check.mjs`（install.sh 拷到 `~/.dsh/bin/`） | 升级前预检（**跨平台共享，唯一来源**）：扫描第三方插件对宿主版本的声明（engines/compatibility/peerDeps），冲突项在弹窗中**单独成区醒目显示** |
 | 每次开机都自启 | 每次登录 + **每次屏幕解锁后**（watcher 检查到新版会弹窗征询） | 有机会跟进官方新版，但由你决定 |
 | — | `dsh-web-unlock-watcher`（Swift 编译，常驻） | 监听 `com.apple.screenIsUnlocked`/会话激活/唤醒 |
 | `restart-dsh-web.cmd` | `restart-dsh-web.sh` / `restart-dsh-web.command`（双击） | 一键重启：停 3080 端口 → 重启 → 轮询等待 |
