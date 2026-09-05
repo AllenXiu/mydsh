@@ -122,10 +122,14 @@ for (const name of thirdParty) {
   // signal 1: dsh.engines.dsh
   const dshEngineRange = pkg.dsh?.engines?.dsh
 
-  // signal 2: dsh.compatibility.dshReleases
+  // signal 2: dsh.compatibility.dshReleases - an explicit, maintained list.
+  // A target version absent from the list is a strong signal (the author
+  // deliberately enumerated supported releases and did not include this one).
   const releases = pkg.dsh?.compatibility?.dshReleases
   let releaseState
+  let releaseDeclared = false
   if (releases && typeof releases === 'object') {
+    releaseDeclared = true
     releaseState = Object.prototype.hasOwnProperty.call(releases, hostVersion)
       ? releases[hostVersion]
       : undefined
@@ -149,14 +153,16 @@ for (const name of thirdParty) {
   if (dshEngineRange && satisfies(dshEngineRange, hostVersion) === false) {
     problems.push(`engines.dsh requires ${dshEngineRange}`)
   }
-  if (releaseState !== undefined && releaseState !== 'compatible') {
-    problems.push(`compatibility marks ${hostVersion} as "${releaseState}"`)
+  if (releaseDeclared && releaseState !== 'compatible') {
+    // Maintained list exists but this host version is absent or not marked
+    // compatible -> treat as conflicting so the upgrade locks the plugin.
+    problems.push(`compatibility list does not cover dsh ${hostVersion}`)
   }
   problems.push(...peerIssues)
 
   if (problems.length > 0) {
     lines.push(`  !! ${name}@${version}  CONFLICT on dsh ${hostVersion}: ${problems.join('; ')}`)
-  } else if (dshEngineRange || releaseState !== undefined || hostPeerEntries.length > 0) {
+  } else if (dshEngineRange || releaseState === 'compatible' || hostPeerEntries.length > 0) {
     lines.push(`  ok ${name}@${version}  compatible with dsh ${hostVersion}`)
   } else {
     lines.push(`  -- ${name}@${version}  no host-version declaration (low risk, unverified)`)
