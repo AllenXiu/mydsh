@@ -78,27 +78,40 @@ while IFS= read -r line; do
   esac
 done <<< "$COMPAT_MSG"
 
+# Compact every report line to just its status token and package@version so
+# the dialog stays small (full reasons stay in the log). Line shape:
+#   "  !! @scope/pkg@1.2.3  CONFLICT on dsh ..."  ->  "⚠  @scope/pkg@1.2.3"
+#   "  ok pkg@1.2.3 ..." / "  -- pkg@1.2.3 ..."   ->  "✓  pkg@1.2.3"
+compact_lines() {
+  printf '%s\n' "$1" \
+    | awk '{ if (NF >= 2) { if ($1 == "!!") print "⚠ ", $2; else print "✓ ", $2 } }' \
+    | sed 's/^/    /'
+}
+CONFLICT_COMPACT="$(compact_lines "$CONFLICT_LINES")"
+OK_COMPACT="$(compact_lines "$OK_LINES")"
+if [ -n "$OK_COMPACT" ]; then
+  OK_COUNT="$(printf '%s\n' "$OK_COMPACT" | sed '/^[[:space:]]*$/d' | grep -c .)"
+else
+  OK_COUNT=0
+fi
+
 # Try a native GUI dialog first (macOS Aqua session).
 ANSWER=""
 rc=1
 if command -v osascript >/dev/null 2>&1; then
-  if [ -n "$CONFLICT_LINES" ]; then
-    BODY="官方发布了新版本 dsh：
-当前  $INSTALLED
-最新  $LATEST
+  if [ -n "$CONFLICT_COMPACT" ]; then
+    BODY="官方发布了新版本 dsh：$INSTALLED → $LATEST
 
-⚠️  以下插件与新版不兼容，升级时将自动卸载：
-$CONFLICT_LINES
-✅  以下插件兼容新版：
-$OK_LINES
-升级会卸载上述冲突插件，主项目不受影响。是否更新？"
+⚠️ 升级将自动卸载以下不兼容插件：
+$CONFLICT_COMPACT
+✅ 其余 $OK_COUNT 个已安装插件兼容新版
+
+是否更新？"
   else
-    BODY="官方发布了新版本 dsh：
-当前  $INSTALLED
-最新  $LATEST
+    BODY="官方发布了新版本 dsh：$INSTALLED → $LATEST
 
-✅  已安装插件均兼容新版：
-$OK_LINES
+✅ 已安装插件均兼容新版
+
 是否立即更新？"
   fi
   # osascript heredoc: escape double quotes for AppleScript string safety.
