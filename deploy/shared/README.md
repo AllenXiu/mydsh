@@ -6,6 +6,8 @@
 当前内容：
 
 - `dsh-web-plugin-compat-check.mjs` — 升级前兼容预检（Node、跨平台）
+- `dsh-agent-preset-compat-check.mjs` — agent preset 逐行 schema 校验（Node、跨平台）
+- `dsh-agent-preset-mount-probe.mjs` — agent preset 真实挂载探针（Node、跨平台）
 
 ## 兼容预检三级判定
 
@@ -33,6 +35,53 @@
 - `--warn-names`     仅 WARN 插件包名，一行一个
 - `--verdict-names`  REJECT/WARN 都输出，格式 `<VERDICT>\t<name>`（TSV）
 
+## agent preset 预检（逐行 schema，`dsh-agent-preset-compat-check.mjs`）
+
+插件预检**看不到 preset**：preset 是 `~/.dsh/.agent-presets/<id>/agent.cordis.yml`
+这份组合，可能来自已卸载插件（同步后不清理）或人工编写。而 `settings.yaml` 的
+`agent-presets.default` 指向的 preset 一旦挂不上，**所有新建/恢复会话都会失败**
+（2026-09-11 的事故：0.1.5 把 `@deepseek-ai/dsh-persona` 的配置键 `text` 改名 `prefix`）。
+
+这个工具把 preset 的每个 row 解析出来，用**本机已安装插件包导出的 `Config`**（就是挂载时
+用的那份 schema）校验 row 的 `config`：
+
+```sh
+node deploy/shared/dsh-agent-preset-compat-check.mjs                # 检查 <home>/.agent-presets 下全部 preset
+node deploy/shared/dsh-agent-preset-compat-check.mjs liangshen      # 按 id
+node deploy/shared/dsh-agent-preset-compat-check.mjs /path/to/preset
+node deploy/shared/dsh-agent-preset-compat-check.mjs --json         # 机器可读
+node deploy/shared/dsh-agent-preset-compat-check.mjs --quiet        # 只留 FAIL
+```
+
+行前缀：`ok`（通过）/ `ok?`（插件没导出 `Config`，未做 schema 校验）/ `skip`（row 被禁用）/
+`FAIL`（解析不到、import 失败、或 config 不合法）。退出码：`0` 全部通过或没 preset，
+`1` 有 FAIL，`2` 用法错误。
+
+覆盖边界：它能判"包能否解析 + config 是否合法"；判不了 isolate realm 之类的结构规则
+（那些交给下面的挂载探针）。
+
+## agent preset 挂载探针（端到端，`dsh-agent-preset-mount-probe.mjs`）
+
+静态校验通过不等于挂得上。这个工具启动一个真实 dsh app（默认 `headless`，便宜），插入
+`agent-presets` 行并调用 `agentPresets.standingKeyFor(id)` —— **与会话创建/恢复走的
+`mountPreset` 同一条路径**，无需浏览器、不发模型请求：
+
+```sh
+node deploy/shared/dsh-agent-preset-mount-probe.mjs                       # 探 settings.yaml 里的默认预设
+node deploy/shared/dsh-agent-preset-mount-probe.mjs --preset liangshen
+node deploy/shared/dsh-agent-preset-mount-probe.mjs --preset standard --profile web  # 忠实 host scope（随机端口起 web）
+node deploy/shared/dsh-agent-preset-mount-probe.mjs --json
+```
+
+判定：`OK` / `FAIL(config)`（含 `invalid config`，= row schema 不兼容，**与 app 无关，
+可直接据此回退或修复**）/ `FAIL(host)`（其他原因，可能是 `headless` host scope 的假阳性，
+用 `--profile web` 复核）/ `INCONCLUSIVE`（超时、无 `dsh`、无输出）。
+退出码：`0` 全 OK、`1` 有 FAIL、`2` 不确定。
+
+它**不留痕迹**：overlay 与会话都建在临时目录里（子进程 cwd 也在那里），运行结束删掉本次
+产生的空会话及其 projcache 投影，`workspace.json` 不动。`DSH_BIN=<path>` 可指定 dsh 可执行文件
+（launchd 之类的精简 PATH 环境需要）。
+
 ## 官方新版刚发布时的 ETARGET（传播延迟）
 
 官方发布一个版本时，主包与它的各个子包是**分多次写入 npm registry** 的，且 registry
@@ -59,5 +108,7 @@ npm error notarget No matching version found for @deepseek-ai/dsh-client-ui-side
 
 - 改共享逻辑只改本目录；两平台 pull 后各自生效：
   - Windows：开机直读仓库 `deploy/shared/`
-  - macOS：重跑 `bash deploy/macos/install.sh` 拷到 `~/.dsh/bin`
-- **不要**在 `deploy/macos` 或 `deploy/windows` 里放 compat-check 副本。
+  - macOS：重跑 `bash deploy/macos/install.sh` 拷到 `~/.dsh/bin`（三个共享脚本一起拷）
+- **不要**在 `deploy/macos` 或 `deploy/windows` 里放 compat-check / preset 工具的副本。
+- 三个工具都是纯 Node（`node:<builtin>` + 从 dsh 依赖树里加载 `yaml`/`semver`），没有自带依赖，
+  可在两平台用同一个 `node` 跑。

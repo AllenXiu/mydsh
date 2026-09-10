@@ -12,13 +12,18 @@
 deploy/
 ├── windows/    Windows 启动/更新逻辑（ps1/cmd/vbs/install/uninstall，仓库直读）
 ├── macos/      macOS 启动/更新逻辑（sh/swift/plist，install.sh 拷到 ~/.dsh/bin）
-└── shared/     ★ 跨平台共享逻辑的唯一来源（当前：dsh-web-plugin-compat-check.mjs）
+├── shared/     ★ 跨平台共享逻辑的唯一来源（dsh-web-plugin-compat-check.mjs、
+│                 dsh-agent-preset-compat-check.mjs、dsh-agent-preset-mount-probe.mjs）
 ```
 
 两个平台各自需要一份"跨平台纯 Node"的兼容预检逻辑，旧结构在 deploy/windows 和
 deploy/macos 各放一份副本，容易漂移。**现在只有 deploy/shared/ 一份**：
-- Windows：boot 时 ps1 直接引用 `..\shared\`；
-- macOS：install.sh 从 shared 拷贝到 `~/.dsh/bin`（安装后脚本继续引用已安装路径，行为不变）。
+- Windows：boot 时 ps1 直接引用 `..\shared\`；诊断工具（preset 逐行校验 / 挂载探针）也从仓库直接跑；
+- macOS：install.sh 从 shared 拷贝到 `~/.dsh/bin`（安装后脚本继续引用已安装路径，行为不变），
+  三个共享脚本一起拷。
+
+preset 工具用于排查"新建/恢复会话报 preset failed to mount"这类故障（`settings.yaml` 的
+`agent-presets.default` 指向的 preset 挂不上 = 会话全废），详见 `deploy/shared/README.md`。
 
 ## 1. 开机链路（操作系统实际执行）
 
@@ -75,6 +80,10 @@ node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本>
 node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --conflict-names  # 只要 REJECT 冲突包名
 node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --verdict-names     # TSV：<REJECT|WARN>\t<包名>
 
+# agent preset 体检（同样是 deploy/shared 这份，跨平台）
+node deploy\shared\dsh-agent-preset-compat-check.mjs            # 逐行 schema 校验 %USERPROFILE%\.dsh\.agent-presets
+node deploy\shared\dsh-agent-preset-mount-probe.mjs             # 真实挂载探针（默认探 settings.yaml 里的默认预设）
+
 # 手动触发一次"检查→询问→升级"
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-update.ps1
 ```
@@ -90,7 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-updat
 ## 6. 维护注意点
 
 - **共享逻辑只有一份（deploy/shared/）**：Windows boot 与 macOS install 都消费它，不存在"两份要一起改"。
-  - Windows 侧不要往 deploy/windows 里放 compat-check 副本；改共享文件只改 `deploy/shared/dsh-web-plugin-compat-check.mjs`。
+  - Windows 侧不要往 deploy/windows 里放 compat-check / preset 工具副本；改共享文件只改 `deploy/shared/` 下的那一份。
   - macOS 改完仓库代码后需在 mac 上重跑 `bash deploy/macos/install.sh` 刷新 `~/.dsh/bin`（macOS 是"安装式"部署，与 Windows 的仓库直读不同）。
 - **token 认证（dsh ≥ 0.1.2）**：每次进程重启 token 变化，`dsh web` 启动时打印 `?token=...` URL，自启日志可查。
 - **路径**：脚本一律用 `%USERPROFILE%`，不硬编码 `C:\Users\xxx`。

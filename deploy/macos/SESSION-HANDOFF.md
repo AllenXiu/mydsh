@@ -21,7 +21,9 @@
 deploy/
 ├── shared/                                  # 跨平台唯一来源
 │   ├── dsh-web-plugin-compat-check.mjs     # 插件兼容预检（Node，跨平台）
-│   └── README.md                            # 三级判定 / 消费模式 / ETARGET 重试约定
+│   ├── dsh-agent-preset-compat-check.mjs   # agent preset 逐行 schema 校验
+│   ├── dsh-agent-preset-mount-probe.mjs    # agent preset 真实挂载探针（端到端）
+│   └── README.md                            # 三级判定 / 消费模式 / preset 体检 / ETARGET 重试约定
 ├── macos/                                   # macOS 平台实现
 │   ├── install.sh / uninstall.sh            # 安装/卸载（拷脚本、编译 Swift、装 LaunchAgent）
 │   ├── dsh-web-autostart.sh                 # 启动入口：确认更新 → 启动 web（前台 exec）
@@ -47,6 +49,8 @@ macOS 运行时目录（由 install.sh 生成/拷贝）：
 ├── dsh-web-autostart.sh / dsh-web-unlock.sh / dsh-web-confirm-update.sh
 ├── dsh-web-plugin-lock.sh
 ├── dsh-web-plugin-compat-check.mjs   # 从 deploy/shared 拷入
+├── dsh-agent-preset-compat-check.mjs # 从 deploy/shared 拷入
+├── dsh-agent-preset-mount-probe.mjs  # 从 deploy/shared 拷入
 ├── dsh-web-unlock-watcher            # swiftc 编译产物
 └── dsh-update-progress               # swiftc 编译产物
 ~/Library/LaunchAgents/com.allern.dsh-web{,-unlock}.plist
@@ -74,6 +78,7 @@ dsh 自身的运行时状态（**不是 deploy 资产，但决定 web 能不能�
 | 插件兼容预检（三级） | REJECT(`!!`) 自动卸载 / WARN(`??`) 保留并提示 / ok / 未声明 | `deploy/shared/dsh-web-plugin-compat-check.mjs` |
 | 冒烟探针 | 扫描插件入口真实 `@deepseek-ai/*` import，用 `require.resolve` 对照宿主导出 | 同上 |
 | 冲突插件自动卸载 | 仅卸载 REJECT；用 `--verdict-names` TSV 取名单 | confirm-update.sh / ps1 |
+| agent preset 体检 | 逐行 schema 校验 + 真实挂载探针；默认预设挂不上 = **所有新建/恢复会话打不开** | `deploy/shared/dsh-agent-preset-{compat-check,mount-probe}.mjs` |
 | 更新进度窗口 | 转圈 + 简短阶段文案（**不显示 npm 原文以免撑宽**）+ 完成/失败态 | `dsh-update-progress.swift` |
 | registry 传播延迟重试 | 仅 `ETARGET/notarget/No matching version` 重试，30/60/120s，最多 4 次 | confirm-update.sh / ps1 |
 | token URL 落盘 | 每次重启把当前 `?token=...` URL 写入 `~/.dsh/current-url.txt` | dsh-web-autostart.sh |
@@ -216,8 +221,9 @@ dsh 自身的运行时状态（**不是 deploy 资产，但决定 web 能不能�
    `notarget … dsh-client-ui-sidebar-right@^0.1.5-rc.2`（`~/.dsh/npm-install.live.log` 仍在），
    但日志里**没有任何** `registry not in sync yet; retrying`（21 秒即失败退出）。怀疑当时跑的是
    `~/.dsh/bin` 里的旧副本（该文件 mtime 23:16 = 事后才刷新）。需在真实 ETARGET 或用伪造 `npm` 的 shim 下验证该分支。
-8. **排障工具收编**：本轮的"逐行 schema 校验器"与"挂载探针"是纯 Node、跨平台的，现在只存在于 `/tmp`（易失）。
-   建议收进 `deploy/shared/` 并在其 README 登记（与 compat-check 同级）。
+8. **排障工具已收编进 `deploy/shared/`**（09-11 完成）：`dsh-agent-preset-compat-check.mjs`（逐行 schema 校验）
+   与 `dsh-agent-preset-mount-probe.mjs`（真实挂载探针，会清理自己产生的空会话）；macOS 由 `install.sh`
+   一同拷进 `~/.dsh/bin`，Windows 从仓库直跑。命令见 §七。
 9. **可选**：dsh 自身更新失败（重试耗尽）时是否顺带提示/处理 web 版本不一致（原 #5）。
 
 ## 七、常用命令
@@ -259,56 +265,34 @@ grep -A2 'agent-presets' ~/.dsh/settings.yaml    # 当前默认预设是哪个
 ls ~/.dsh/.agent-presets/                        # 运行时预设（插件同步来的 + 自建的）
 grep -n -A3 'dsh-persona' ~/.dsh/.agent-presets/*/agent.cordis.yml   # 0.1.5 要求 prefix（0.1.2 时代写的是 text）
 
+# preset 体检（工具在 deploy/shared/，细节见其 README；装过 install.sh 后也可从 ~/.dsh/bin 跑）
+node deploy/shared/dsh-agent-preset-compat-check.mjs          # 逐行 schema 校验；退出码 1 = 有 FAIL
+node deploy/shared/dsh-agent-preset-compat-check.mjs liangshen --quiet
+node deploy/shared/dsh-agent-preset-mount-probe.mjs           # 真实挂载探针：探 settings.yaml 里的默认预设
+node deploy/shared/dsh-agent-preset-mount-probe.mjs --preset standard --profile web   # 忠实 host scope
+
 # 修已知改名（改前先备份；注意插件重装会把它覆盖回去，见 §四.7）
 cp ~/.dsh/.agent-presets/liangshen/agent.cordis.yml /tmp/preset.old
 sed -i '' 's/^    text:/    prefix:/' ~/.dsh/.agent-presets/liangshen/agent.cordis.yml
 
-# 会话/存储排障：只删会话目录会留幽灵行，索引要一起清
+# 会话/存储排障：只删会话目录会留幽灵行，索引要一起清（§四.7 有清单）
 ls ~/.dsh/sessions/*/*/ | head
-python3 /tmp/sweep-orphans.py    # 清掉 projcache 里磁盘已不存在的会话投影
 ```
 
-### 预设挂载探针（不依赖浏览器；复现/验证 §四.7 这类故障）
+### 预设体检两个工具的区别（细节与全部选项见 `deploy/shared/README.md`）
 
-`/tmp/preset-mount-probe.mjs`：
+- `dsh-agent-preset-compat-check.mjs`：**静态**。把 preset 每个 row 的 `name` 解析到本机已安装的插件包，
+  用该包导出的 `Config` 校验 row 的 `config` —— 就是挂载时跑的配置校验。能覆盖"包能否解析 + 配置是否合法"，
+  覆盖不到 isolate realm 那类结构规则。
+- `dsh-agent-preset-mount-probe.mjs`：**端到端**。启动真实 app（默认 `headless`，便宜）并调用
+  `agentPresets.standingKeyFor(id)`（= 会话创建/恢复走的 `mountPreset`），无需浏览器、不发模型请求。
+  判定 `OK` / `FAIL(config)`（与 app 无关，可直接据此回退或修复）/ `FAIL(host)`（可能是 headless
+  host scope 的假阳性，用 `--profile web` 复核）/ `INCONCLUSIVE`（退出码 2）。它不留痕迹：
+  overlay 与子进程 cwd 都在临时目录，运行后清掉本次产生的空会话与 projcache 投影。
 
-```js
-export const name = 'preset-mount-probe'
-export const inject = ['agentPresets']
-export function apply(ctx, config) {
-  void (async () => {
-    for (const id of config.ids ?? []) {
-      try { console.log(`PRESET-PROBE OK   ${id}`, JSON.stringify(await ctx.agentPresets.standingKeyFor(id))) }
-      catch (error) { console.log(`PRESET-PROBE FAIL ${id}`, error?.message ?? String(error)) }
-    }
-    process.exit(0)
-  })()
-}
-```
-
-`/tmp/probe-preset.yml`：
-
-```yaml
-- insert:
-    - id: agent-presets
-      name: '@deepseek-ai/dsh-agent-presets'
-      config:
-        default: liangshen
-    - id: preset-mount-probe
-      name: ./preset-mount-probe.mjs      # 相对 patch 文件所在目录
-      config:
-        ids: [liangshen]
-```
-
-运行：`dsh --profile headless --patch /tmp/probe-preset.yml noop`，看 `PRESET-PROBE OK/FAIL` 行。
-
-> `headless` 组合本身**没有** `agent-presets` 行，所以必须先 `insert`；探针调的就是会话创建走的
-> `mountPreset`。反过来说：不加 `--patch` 时 headless 不挂载任何预设，它"跑成功"**不能**证明预设可用。
-
-逐行 schema 校验器（本轮为 `/tmp/validate-preset.mjs`）：解析 `agent.cordis.yml` → 每个 row 的 `name`
-从 `~/.dsh/profiles/node_modules`（+ dsh 自带 `node_modules`）解析到插件包 → `import` 它导出的 `Config`
-→ 对 row 的 `config` 调一次（挂载时的配置校验就是这样跑的）。它能覆盖"包是否可解析 + 配置是否合法"，
-覆盖不到 isolate realm 那类结构规则。
+> 直接 `dsh --profile headless <task>` 成功**不能**证明预设可用：headless 组合里没有 `agent-presets` 行，
+> 它不挂载任何预设；`--dump-config` 只看组合、不校验 preset。这两个工具的差异（一个不挂载、一个只 dump）
+> 它都处理了。
 
 ## 八、重要经验（下次直接用）
 
