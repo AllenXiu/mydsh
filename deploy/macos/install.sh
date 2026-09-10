@@ -30,15 +30,16 @@ PLIST_UNLOCK_DST="$LA_DIR/$LABEL_UNLOCK.plist"
 echo "==> 1/6 Prepare directories"
 mkdir -p "$LA_DIR" "$BIN_DIR"
 
-echo "==> 2/6 Install autostart + unlock + confirm + lock scripts and the shared checkers into $BIN_DIR"
+echo "==> 2/6 Install autostart + unlock + confirm + lock + preset-gate scripts and the shared checkers into $BIN_DIR"
 cp "$HERE/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-autostart.sh"
 cp "$HERE/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-unlock.sh"
 cp "$HERE/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-confirm-update.sh"
 cp "$HERE/dsh-web-plugin-lock.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
+cp "$HERE/dsh-web-preset-gate.sh" "$BIN_DIR/dsh-web-preset-gate.sh"
 cp "$SHARED_DIR/dsh-web-plugin-compat-check.mjs" "$BIN_DIR/dsh-web-plugin-compat-check.mjs"
 cp "$SHARED_DIR/dsh-agent-preset-compat-check.mjs" "$BIN_DIR/dsh-agent-preset-compat-check.mjs"
 cp "$SHARED_DIR/dsh-agent-preset-mount-probe.mjs" "$BIN_DIR/dsh-agent-preset-mount-probe.mjs"
-chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-plugin-lock.sh"
+chmod +x "$BIN_DIR/dsh-web-autostart.sh" "$BIN_DIR/dsh-web-unlock.sh" "$BIN_DIR/dsh-web-confirm-update.sh" "$BIN_DIR/dsh-web-plugin-lock.sh" "$BIN_DIR/dsh-web-preset-gate.sh"
 
 echo "==> 3/6 Compile the screen-unlock watcher and the update progress window"
 if [ ! -x "$BIN_DIR/dsh-web-unlock-watcher" ] || [ "$HERE/dsh-web-unlock-watcher.swift" -nt "$BIN_DIR/dsh-web-unlock-watcher" ]; then

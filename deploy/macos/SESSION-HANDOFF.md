@@ -32,6 +32,7 @@ deploy/
 │   ├── dsh-web-unlock-watcher.swift         # 常驻：监听解锁/唤醒事件（编译为二进制）
 │   ├── dsh-update-progress.swift            # 更新进度窗口（编译为二进制）
 │   ├── dsh-web-plugin-lock.sh               # 手动工具：禁用/恢复指定插件（已不用于升级流程）
+│   ├── dsh-web-preset-gate.sh               # 预设门禁：启动前/升级后体检默认预设，按需修复或回退
 │   ├── com.allern.dsh-web.plist             # LaunchAgent：持有 web 进程
 │   └── com.allern.dsh-web-unlock.plist      # LaunchAgent：常驻解锁监听
 └── windows/                                 # Windows 实现（仓库直读）
@@ -48,6 +49,7 @@ macOS 运行时目录（由 install.sh 生成/拷贝）：
 ~/.dsh/bin/
 ├── dsh-web-autostart.sh / dsh-web-unlock.sh / dsh-web-confirm-update.sh
 ├── dsh-web-plugin-lock.sh
+├── dsh-web-preset-gate.sh            # 预设门禁（启动前 + 升级后）
 ├── dsh-web-plugin-compat-check.mjs   # 从 deploy/shared 拷入
 ├── dsh-agent-preset-compat-check.mjs # 从 deploy/shared 拷入
 ├── dsh-agent-preset-mount-probe.mjs  # 从 deploy/shared 拷入
@@ -79,6 +81,7 @@ dsh 自身的运行时状态（**不是 deploy 资产，但决定 web 能不能�
 | 冒烟探针 | 扫描插件入口真实 `@deepseek-ai/*` import，用 `require.resolve` 对照宿主导出 | 同上 |
 | 冲突插件自动卸载 | 仅卸载 REJECT；用 `--verdict-names` TSV 取名单 | confirm-update.sh / ps1 |
 | agent preset 体检 | 逐行 schema 校验 + 真实挂载探针；默认预设挂不上 = **所有新建/恢复会话打不开** | `deploy/shared/dsh-agent-preset-{compat-check,mount-probe}.mjs` |
+| 预设门禁（已接入） | 每次启动 web 前 + 升级 dsh 成功后自动体检默认预设：`FAIL(config)` 先幂等修复已知改名，仍失败则回退 `standard` 并弹窗；从不阻塞启动 | `dsh-web-preset-gate.sh` |
 | 更新进度窗口 | 转圈 + 简短阶段文案（**不显示 npm 原文以免撑宽**）+ 完成/失败态 | `dsh-update-progress.swift` |
 | registry 传播延迟重试 | 仅 `ETARGET/notarget/No matching version` 重试，30/60/120s，最多 4 次 | confirm-update.sh / ps1 |
 | token URL 落盘 | 每次重启把当前 `?token=...` URL 写入 `~/.dsh/current-url.txt` | dsh-web-autostart.sh |
@@ -202,14 +205,19 @@ dsh 自身的运行时状态（**不是 deploy 资产，但决定 web 能不能�
    - 附：该名字是内置模型的**显示名**，id 为 `deepseek-flash`（定义在 `dsh-llm-deepseek`）。
 2. **上游 liangshen preset 不兼容 0.1.5**：0.3.16–0.3.20 的 preset 全是 `text:`，而 0.3.20 的 manifest 已声明
    `dsh >=0.1.5-rc.1` —— 值得给上游提 issue。本地对策见 §四.7 的"⚠️ 会被覆盖"。
-3. **把"默认预设可挂载"纳入自检**（预防性设计，未实现）：
-   - 位置：**升级 dsh 之后、启动 web 之前**各跑一次（升级前跑没意义：目标版本的插件还没装）；
-     外加**每次启动**跑一次，覆盖"装插件/插件同步 preset 后重启"这条路。
-   - 手段：挂载探针（`standingKeyFor(default)`，见 §七）；失败时
-     **① 自动回退 `agent-presets.default` → `standard`（会话立刻可用）+ 弹窗/日志提示**；
-     **② 对已知改名做幂等修复**（`persona.text` → `prefix`）。
-   - 边界：它治的是**后果**（会话全废），不是插件不兼容本身；要防"再被覆盖"，必须在插件同步 preset 之后再跑一次。
-   - 若无预设 / 默认预设是内置的 `standard`，则**根本不会有这个问题**（Windows 侧默认即如此）。
+3. **"默认预设可挂载"自检：macOS 已落地**（`dsh-web-preset-gate.sh`，09-11 完成）：
+   - 位置：`dsh-web-autostart.sh`（**每次启动 web 前**，端口检查之后）+ `dsh-web-confirm-update.sh`
+     （**升级 dsh 成功后**再检查一次）。
+   - 行为：探针 `FAIL(config)` → ①幂等修复已知改名（`persona.text` → `prefix`，改前备份、行级定位、
+     命中数≠1 就放弃）→ 重探 → OK 则弹窗告知；②仍失败 → 把 `agent-presets.default` 回退为 `standard`
+     （改前备份、写入值记录在日志）→ 弹窗告知。`FAIL(host)` / `INCONCLUSIVE` **只记日志、不改文件**。
+   - 不阻塞启动：所有路径 `exit 0`，弹窗在后台 `osascript giving up after 60`。
+   - 手动：`bash ~/.dsh/bin/dsh-web-preset-gate.sh [--preset <id>] [--dry-run] [--no-notify]`；
+     可加 `--settings <path>` 指向副本做演练（不碰真实 settings）。
+   - **边界**：它治的是"后果"（会话全废），不是插件不兼容本身；插件同步 preset 是单向覆盖，
+     所以必须每次启动都跑（已如此），而不是修一次就算完。
+   - **Windows 侧待办**：同一策略尚未实现（Windows 默认预设通常是内置 `standard`，且是否装了带 preset
+     的插件需先确认）。
 4. **Windows 侧未实测**：`deploy/windows/dsh-web-update.ps1` 的登录重试状态机（30/60/120s + 倒计时）
    是 09-10 新写的，macOS 无 `pwsh` 无法本地验证语法，需在 Windows 上跑一次确认。
 5. **dshmarket 重启绕过 launchd**：market 自己的 restart 不经过 LaunchAgent，web 会变成"launchd 外的孤儿进程"
@@ -271,6 +279,12 @@ node deploy/shared/dsh-agent-preset-compat-check.mjs liangshen --quiet
 node deploy/shared/dsh-agent-preset-mount-probe.mjs           # 真实挂载探针：探 settings.yaml 里的默认预设
 node deploy/shared/dsh-agent-preset-mount-probe.mjs --preset standard --profile web   # 忠实 host scope
 
+# preset 门禁（每次启动 web 前 + 升级 dsh 成功后由 autostart/confirm 脚本自动调用）
+bash deploy/macos/dsh-web-preset-gate.sh                 # 体检默认预设，按需修复/回退
+bash deploy/macos/dsh-web-preset-gate.sh --dry-run       # 只报告将会做什么，不写文件
+bash deploy/macos/dsh-web-preset-gate.sh --preset <id> --settings /tmp/settings-copy.yaml   # 演练不碰真实文件
+grep 'preset-gate' ~/.dsh/autostart-update.log | tail -10   # 门禁的动作与判定
+
 # 修已知改名（改前先备份；注意插件重装会把它覆盖回去，见 §四.7）
 cp ~/.dsh/.agent-presets/liangshen/agent.cordis.yml /tmp/preset.old
 sed -i '' 's/^    text:/    prefix:/' ~/.dsh/.agent-presets/liangshen/agent.cordis.yml
@@ -322,3 +336,6 @@ ls ~/.dsh/sessions/*/*/ | head
     与 `session_projcache`（否则列表留幽灵行），删前先备份。
 13. **headless 不能用来验证预设**：headless 组合里没有 `agent-presets` 行，它的会话不会挂任何预设
     （要用 `--patch` 插进去才能验证）；`--dump-config` 只看组合、不校验 preset。
+    这两个差异工具都处理了（见 §七）。
+14. **bash 里 `$VAR` 后紧跟中文字符（如 `」`）会出事**：launchd/`LC_ALL=C` 环境下 bash 会把多字节字符
+    的字节并入变量名，报 `PRESET?: unbound variable`。写脚本时一律用 `${VAR}` 包起来（门禁脚本已如此）。

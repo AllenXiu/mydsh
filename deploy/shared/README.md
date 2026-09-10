@@ -82,6 +82,10 @@ node deploy/shared/dsh-agent-preset-mount-probe.mjs --json
 产生的空会话及其 projcache 投影，`workspace.json` 不动。`DSH_BIN=<path>` 可指定 dsh 可执行文件
 （launchd 之类的精简 PATH 环境需要）。
 
+> macOS 侧的消费方：`deploy/macos/dsh-web-preset-gate.sh` 在**每次启动 web 前**与**升级 dsh 成功后**
+> 调用本工具；`FAIL(config)` 先幂等修复已知改名、仍失败则把 `agent-presets.default` 回退为 `standard`
+> 并弹窗告知（见 `deploy/macos/README.md`）。
+
 ## 官方新版刚发布时的 ETARGET（传播延迟）
 
 官方发布一个版本时，主包与它的各个子包是**分多次写入 npm registry** 的，且 registry

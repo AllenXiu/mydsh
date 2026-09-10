@@ -224,6 +224,12 @@ if [ "$rc" = 0 ]; then
 
       if [ "$NPM_RC" -eq 0 ]; then
         log "confirm-update: updated to $(dsh --version 2>/dev/null || echo unknown)"
+        # An upgrade is exactly when a preset written for the previous host stops
+        # mounting, so guard the default preset before the web restarts.
+        GATE="$HOME/.dsh/bin/dsh-web-preset-gate.sh"
+        if [ -x "$GATE" ]; then
+          bash "$GATE" || log "WARN confirm-update: preset gate exited non-zero; continuing"
+        fi
         if [ -n "$PROGRESS_PID" ]; then
           printf 'STATUS:DONE|更新完成，当前版本：%s\n' "$(dsh --version 2>/dev/null)" > "$STATUS_FILE"
         fi

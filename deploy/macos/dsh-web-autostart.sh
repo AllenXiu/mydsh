@@ -50,6 +50,18 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 0
 fi
 
+# ---- 2b. guard the default agent preset before serving ----
+# A preset that stopped mounting (host rename, plugin re-sync) makes every new
+# and resumed session fail while everything else looks healthy; the gate
+# repairs the known renames or falls back the default preset, and never blocks
+# the start.
+GATE="$HOME/.dsh/bin/dsh-web-preset-gate.sh"
+if [ -x "$GATE" ]; then
+  bash "$GATE" || log "WARN preset-gate exited non-zero; continuing"
+else
+  log "WARN $GATE missing - skipping the preset gate"
+fi
+
 # ---- 3. launch the web UI without opening a browser ----
 # Foreground exec is intentional: the LaunchAgent owns the server process.
 # A background helper watches the startup log and, once the server is up,
