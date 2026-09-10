@@ -166,24 +166,61 @@ if [ "$rc" = 0 ]; then
 
       # Run npm, appending output to a live log. The dialog shows only short
       # canned status lines (never raw npm output, which would widen it).
+      #
+      # A just-published official release can transiently fail with
+      # ETARGET/notarget: npm publishes the main package and its subpackages as
+      # separate manifest writes, so the registry node this machine hits may
+      # briefly lack a required subpackage version. That is propagation lag,
+      # not a real failure - retry with backoff (30s/60s/120s) before giving up.
       : > "$NPM_LIVE"
-      npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$NPM_LIVE" 2>&1 &
-      NPM_PID=$!
-      PHASE=0
-      while kill -0 "$NPM_PID" 2>/dev/null; do
-        if [ -n "$PROGRESS_PID" ]; then
-          PHASE=$(( (PHASE + 1) % 3 ))
-          case "$PHASE" in
-            0) MSG="正在下载并安装新版本，请稍候..." ;;
-            1) MSG="正在更新依赖包..." ;;
-            2) MSG="即将完成..." ;;
+      ATTEMPT=0
+      MAX_ATTEMPTS=4
+      NPM_RC=0
+      while : ; do
+        ATTEMPT=$((ATTEMPT + 1))
+        : > "$NPM_LIVE"
+        npm install -g "@deepseek-ai/dsh@$DSH_TAG" >> "$NPM_LIVE" 2>&1 &
+        NPM_PID=$!
+        PHASE=0
+        while kill -0 "$NPM_PID" 2>/dev/null; do
+          if [ -n "$PROGRESS_PID" ]; then
+            PHASE=$(( (PHASE + 1) % 3 ))
+            case "$PHASE" in
+              0) MSG="正在下载并安装新版本，请稍候..." ;;
+              1) MSG="正在更新依赖包..." ;;
+              2) MSG="即将完成..." ;;
+            esac
+            printf 'STATUS:UPDATE|%s\n' "$MSG" > "$STATUS_FILE"
+          fi
+          sleep 1
+        done
+        wait "$NPM_PID"
+        NPM_RC=$?
+        cat "$NPM_LIVE" >> "$LOG" 2>/dev/null || true
+        [ "$NPM_RC" -eq 0 ] && break
+
+        # Retry only registry-propagation failures; a genuine error stops now.
+        if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ] && \
+           grep -qE 'ETARGET|notarget|No matching version' "$NPM_LIVE" 2>/dev/null; then
+          case "$ATTEMPT" in
+            1) DELAY=30 ;;
+            2) DELAY=60 ;;
+            *) DELAY=120 ;;
           esac
-          printf 'STATUS:UPDATE|%s\n' "$MSG" > "$STATUS_FILE"
+          log "confirm-update: registry not in sync yet (attempt $ATTEMPT/$MAX_ATTEMPTS); retrying in ${DELAY}s"
+          LEFT="$DELAY"
+          while [ "$LEFT" -gt 0 ]; do
+            if [ -n "$PROGRESS_PID" ]; then
+              printf 'STATUS:UPDATE|官方刚发布，registry 仍在同步；%s 秒后自动重试（第 %s/%s 次）...\n' \
+                "$LEFT" "$ATTEMPT" "$MAX_ATTEMPTS" > "$STATUS_FILE"
+            fi
+            sleep 1
+            LEFT=$((LEFT - 1))
+          done
+          continue
         fi
-        sleep 1
+        break
       done
-      wait "$NPM_PID"
-      NPM_RC=$?
 
       if [ "$NPM_RC" -eq 0 ]; then
         log "confirm-update: updated to $(dsh --version 2>/dev/null || echo unknown)"

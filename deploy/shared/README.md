@@ -33,6 +33,28 @@
 - `--warn-names`     仅 WARN 插件包名，一行一个
 - `--verdict-names`  REJECT/WARN 都输出，格式 `<VERDICT>\t<name>`（TSV）
 
+## 官方新版刚发布时的 ETARGET（传播延迟）
+
+官方发布一个版本时，主包与它的各个子包是**分多次写入 npm registry** 的，且 registry
+有多个镜像节点。因此刚发布后的几分钟内，本机命中的节点可能缺少某个必需子包版本，
+`npm install -g @deepseek-ai/dsh@latest` 会以传播类错误失败：
+
+```
+npm error code ETARGET
+npm error notarget No matching version found for @deepseek-ai/dsh-client-ui-sidebar-right@^0.1.5-rc.2
+```
+
+这是**暂时状态**（同一命令稍后重跑即成功），不是配置或插件问题。两个平台因此都在
+升级步骤内置**自动重试**：
+
+- 仅当输出匹配 `ETARGET|notarget|No matching version` 时重试；其他错误立即停止
+- 最多 4 次尝试，失败间隔 30s → 60s → 120s
+- 每次尝试前清空 live 日志，避免上一次的错误残留影响判定
+- 进度窗口在等待期间显示倒计时（macOS 与 Windows 一致）
+- 尝试用尽仍失败：保持当前宿主版本不变，退出码 0（不重启 web）
+
+> 失败时宿主版本不会被改动（npm 解析失败不会产生半安装状态），web 继续跑原版本。
+
 ## 维护约定
 
 - 改共享逻辑只改本目录；两平台 pull 后各自生效：

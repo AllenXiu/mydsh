@@ -100,13 +100,28 @@ foreach ($name in $conflictNames) {
   Pop-Location
 }
 
-# --- upgrade the host with a live progress window (macOS parity) ---
-Log "upgrading official dsh to $latest"
+# --- upgrade the host with a live progress window + registry retry ---
+# A just-published official release can transiently fail with ETARGET: npm
+# publishes the main package and its subpackages as separate manifest writes,
+# so this machine's registry node may briefly lack a required subpackage
+# version. Retry with backoff (30/60/120s) before giving up.
 Add-Type -AssemblyName System.Windows.Forms
 $script:npmLive = Join-Path $homeDir '.dsh\npm-install.live.log'
-$script:npmJob = Start-Job -ScriptBlock { param($spec, $lf)
-  & npm install -g $spec 2>&1 | Out-File -FilePath $lf -Encoding UTF8
-} -ArgumentList "@deepseek-ai/dsh@$Tag", $script:npmLive
+$script:maxAttempts = 4
+$script:attempt = 0
+$script:npmRc = 1
+$script:waiting = 0
+
+function Start-NpmAttempt {
+  $script:attempt++
+  Remove-Item $script:npmLive -ErrorAction SilentlyContinue
+  Log "upgrading official dsh to $latest (attempt $script:attempt/$script:maxAttempts)"
+  $script:npmJob = Start-Job -ScriptBlock { param($spec, $lf)
+    & npm install -g $spec 2>&1 | Out-File -FilePath $lf -Encoding UTF8
+    $LASTEXITCODE
+  } -ArgumentList "@deepseek-ai/dsh@$Tag", $script:npmLive
+}
+Start-NpmAttempt
 
 # small always-on-top dialog cycling canned phase text while npm installs
 $script:form = New-Object System.Windows.Forms.Form
@@ -127,14 +142,43 @@ $script:phaseIdx = 0
 $script:timer = New-Object System.Windows.Forms.Timer
 $script:timer.Interval = 800
 $script:timer.Add_Tick({
-  if ($script:npmJob.State -ne 'Running') {
-    $script:timer.Stop()
-    $script:label.Text = if ($script:npmJob.State -eq 'Completed') { '更新完成' } else { '更新失败' }
-    $script:form.Close()
-  } else {
+  # retry countdown in progress
+  if ($script:waiting -gt 0) {
+    $script:waiting--
+    if ($script:waiting -le 0) {
+      Start-NpmAttempt
+    } else {
+      $script:label.Text = "官方刚发布，registry 仍在同步；$($script:waiting) 秒后自动重试（第 $($script:attempt)/$($script:maxAttempts) 次）..."
+    }
+    return
+  }
+  if ($script:npmJob.State -in @('Running', 'NotStarted')) {
     $script:label.Text = $script:phases[$script:phaseIdx % $script:phases.Length]
     $script:phaseIdx++
+    return
   }
+  # job finished: collect exit code + output
+  $out = @(Receive-Job $script:npmJob)
+  $script:npmRc = if ($out.Count -gt 0) { [int]($out[-1]) } else { 1 }
+  if (Test-Path $script:npmLive) { Get-Content $script:npmLive | ForEach-Object { Log "npm: $_" } }
+  Remove-Job $script:npmJob -Force
+  if ($script:npmRc -eq 0) {
+    $script:timer.Stop()
+    $script:label.Text = '更新完成'
+    $script:form.Close()
+    return
+  }
+  $text = if (Test-Path $script:npmLive) { Get-Content $script:npmLive -Raw } else { '' }
+  if ($script:attempt -lt $script:maxAttempts -and $text -match 'ETARGET|notarget|No matching version') {
+    $script:waiting = switch ($script:attempt) { 1 { 30 } 2 { 60 } default { 120 } }
+    Log "registry not in sync yet (attempt $script:attempt/$script:maxAttempts); retrying in $($script:waiting)s"
+    $script:label.Text = "官方刚发布，registry 仍在同步；$($script:waiting) 秒后自动重试（第 $($script:attempt)/$($script:maxAttempts) 次）..."
+    return
+  }
+  $script:timer.Stop()
+  Log 'WARN npm install failed and no retry applies'
+  $script:label.Text = '更新失败'
+  $script:form.Close()
 })
 $script:form.Add_Shown({ $script:timer.Start() })
 try {
@@ -143,19 +187,17 @@ try {
   # no interactive desktop / STA unavailable - fall back to waiting on the job
   Log "progress window unavailable ($($_.Exception.Message)); waiting without it"
   Wait-Job $script:npmJob | Out-Null
+  $out = @(Receive-Job $script:npmJob)
+  $script:npmRc = if ($out.Count -gt 0) { [int]($out[-1]) } else { 1 }
+  Remove-Job $script:npmJob -Force
 }
 
-# job finished
-if ($script:npmJob.State -eq 'Failed') {
-  Log 'WARN npm install job failed'
-  Receive-Job $script:npmJob | ForEach-Object { Log "npm: $_" }
-  Remove-Job $script:npmJob -Force
+# job finished (status tracked by the retry loop above)
+if ($script:npmRc -ne 0) {
   Log 'update failed - keeping current version'
   Log '===== dsh web update check end ====='
   exit 0
 }
-Receive-Job $script:npmJob | ForEach-Object { Log "npm: $_" }
-Remove-Job $script:npmJob -Force
 $newVer = (& dsh --version 2>$null | Out-String).Trim()
 Log "updated to $newVer"
 Log '===== dsh web update check end ====='
