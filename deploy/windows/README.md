@@ -33,6 +33,8 @@ preset 工具用于排查"新建/恢复会话报 preset failed to mount"这类�
  → <repo>\deploy\windows\dsh-autostart.cmd    ← 仓库内，git 管理
      ├─ powershell -STA dsh-web-update.ps1      ← 仓库内：比对版本 → 预检 → 弹窗 → 卸载冲突 → 进度窗升级
      │      └─ 调用 deploy\shared\dsh-web-plugin-compat-check.mjs（单份跨平台源）
+     ├─ powershell -File dsh-web-preset-gate.ps1 ← 启动前体检默认预设；修已知改名 / 回退默认（不阻塞启动）
+     │      └─ 调用 deploy\shared\dsh-agent-preset-mount-probe.mjs（真实挂载探针）
      └─ call dsh web（全局 npm 官方包）
 ```
 
@@ -41,6 +43,7 @@ preset 工具用于排查"新建/恢复会话报 preset failed to mount"这类�
 | `dsh-autostart.cmd` | deploy/windows/ | 启动器：自定位（`%~dp0`）找仓库里的 ps1 → 跑更新确认 → 解析 dsh → 启动 web |
 | `dsh-web-update.ps1` | deploy/windows/ | 核心：`dsh --version` vs `npm view @deepseek-ai/dsh@latest` → 有新版跑 compat 预检 → MessageBox 询问（冲突插件单列）→ Yes 逐个 `dsh plugin --profile web remove` 卸载冲突 → WinForms 进度窗轮转阶段文案的同时 `npm install -g` 升级 |
 | `dsh-web-plugin-compat-check.mjs` | **deploy/shared/**（唯一来源） | 升级前预检（纯 Node、跨平台，**三级判定** REJECT/WARN/兼容，细节见 deploy/shared/README.md）：REJECT（engines/peer/已知规则/冒烟证实）→升级时卸载；WARN（仅声明列表未覆盖）→保留并提示。输出 `--conflict-names` / `--warn-names` / `--verdict-names`(TSV) 供两平台脚本消费，提取正则只此一份 |
+| `dsh-web-preset-gate.ps1` | deploy/windows/ | 预设门禁：启动前 + 升级成功后体检 `agent-presets.default`；`FAIL(config)` 先修已知改名（`persona text:`→`prefix:`，改前备份），插件托管的 preset（改完会被重同步覆盖）或修复无效则把默认回退为 `standard`；`FAIL(host)`/`INCONCLUSIVE` 只记日志。**永不阻塞启动** |
 | `dsh-web-autostart.vbs` | deploy/windows/ | **模板**（占位符 `<REPO_ROOT>`）：install.ps1 把真实仓库路径替换后写入 Startup |
 | `install.ps1` | deploy/windows/ | 把 Startup VBS 注册/刷新为指向本仓库；顺带删除旧的 detached 副本（§6） |
 | `uninstall.ps1` | deploy/windows/ | 移除 Startup VBS，停止开机自启；仓库文件不动 |
@@ -83,6 +86,8 @@ node deploy/shared/dsh-web-plugin-compat-check.mjs --host <目标版本> --verdi
 # agent preset 体检（同样是 deploy/shared 这份，跨平台）
 node deploy\shared\dsh-agent-preset-compat-check.mjs            # 逐行 schema 校验 %USERPROFILE%\.dsh\.agent-presets
 node deploy\shared\dsh-agent-preset-mount-probe.mjs             # 真实挂载探针（默认探 settings.yaml 里的默认预设）
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-preset-gate.ps1              # 门禁：体检默认预设，按需修复/回退
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-preset-gate.ps1 -DryRun      # 只报告不写文件
 
 # 手动触发一次"检查→询问→升级"
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-update.ps1
@@ -94,6 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-updat
 
 - 兼容预检为**三级判定**（REJECT/WARN/兼容，规则细节见 deploy/shared/README.md）。`@kenz1117/dsh-ui-usage-billing` 这类"声明列表只覆盖 0.1.1、无其他硬证据"的插件现判为 **WARN**：升级时**保留**，只在弹窗提示"尚未声明支持"；不再仅因列表过期就卸载。只有 `engines.dsh`/peer 范围违反、内置已知规则或冒烟探针证实不兼容（如 web-all 一例）才判 **REJECT** 并自动卸载。
 - `@linxin666/dsh-web-all` < 0.3.9 的 engines 虽写 `>=0.1.1-rc.1`，但其固定依赖 `dsh-better-sidebar` 0.15.x 引用 0.1.2 已删除的 `settingsNamespace` 导出——**实测在 0.1.2 崩溃**。compat-check 内置该**已知运行时冲突规则**（`web-all <0.3.9` 对 `0.1.2+` 判 CONFLICT）。需要升回 0.1.2 兼容版时手动 `dsh plugin --profile web add @linxin666/dsh-web-all@0.3.14 -E`。
+- **插件托管的 agent preset**：`@linxin666/dsh-web-all`（bundle 含 `@linxin666/dsh-liangshen`）在 web 启动时把 `liangshen` 预设**单向同步**进 `%USERPROFILE%\.dsh\.agent-presets\`，会覆盖任何就地修补，且其预设仍是 0.1.2 时代的 `text:`（0.1.5 的 `@deepseek-ai/dsh-persona` 已要求 `prefix:`）→ 选中它会「所有会话打不开」。对这类 preset，门禁不做无效的就地修复，而是把默认回退到 `standard`。根治要等上游修 preset 或升级 `dsh-web-all`。
 - 升级到更高主线时先跑一次预检，把新出现的 `CONFLICT` 纳入弹窗预期。
 
 ## 6. 维护注意点
@@ -101,6 +107,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/dsh-web-updat
 - **共享逻辑只有一份（deploy/shared/）**：Windows boot 与 macOS install 都消费它，不存在"两份要一起改"。
   - Windows 侧不要往 deploy/windows 里放 compat-check / preset 工具副本；改共享文件只改 `deploy/shared/` 下的那一份。
   - macOS 改完仓库代码后需在 mac 上重跑 `bash deploy/macos/install.sh` 刷新 `~/.dsh/bin`（macOS 是"安装式"部署，与 Windows 的仓库直读不同）。
+- **预设门禁**：`dsh-autostart.cmd` 在启动 web 前、`dsh-web-update.ps1` 在升级成功后都会调用 `dsh-web-preset-gate.ps1`。它用挂载探针（headless）判定；`FAIL(config)` 才动作，`FAIL(host)` 是 headless 宿主域的常见假阳性（如内置 `standard`），只记日志不改文件——用 `--profile web` 可复核。
+- **空会话（header-only）**：会话目录只剩几百字节、0 事件时 UI 会用 cwd 目录名当标题显示成"同名空会话"。删除要**同时**清 `storages\workspace.json` 的 `sessionIds` 与 `storages\session_projcache.json`（否则列表留幽灵行），删前先备份。
 - **token 认证（dsh ≥ 0.1.2）**：每次进程重启 token 变化，`dsh web` 启动时打印 `?token=...` URL，自启日志可查。
 - **路径**：脚本一律用 `%USERPROFILE%`，不硬编码 `C:\Users\xxx`。
 - **PATH**：登录自启环境可能不含 node/npm/dsh；`dsh-autostart.cmd` 用 `where dsh` 探测并回退常见全局前缀，`dsh-web-update.ps1` 开头也会把 node bin 前缀 prepend 进 PATH。

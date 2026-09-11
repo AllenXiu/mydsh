@@ -30,6 +30,14 @@ if not exist "%PS1%" goto :startweb
 powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%PS1%"
 echo [%date% %time%] update ps1 exit code: %errorlevel% >> "%LOG%"
 
+rem ---- 1b. guard the default agent preset before serving ----
+rem A preset that stopped mounting (host rename, plugin re-sync) makes every
+rem new and resumed session fail while everything else looks healthy; the
+rem gate repairs the known renames or falls back the default preset, and
+rem never blocks the start.
+set "GATE=%~dp0dsh-web-preset-gate.ps1"
+if exist "%GATE%" powershell -NoProfile -ExecutionPolicy Bypass -File "%GATE%"
+
 :startweb
 rem ---- 2. start the web UI; the browser opens the authenticated URL ----
 call "%DSH%" web >> "%LOG%" 2>&1

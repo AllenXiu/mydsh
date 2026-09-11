@@ -82,9 +82,12 @@ node deploy/shared/dsh-agent-preset-mount-probe.mjs --json
 产生的空会话及其 projcache 投影，`workspace.json` 不动。`DSH_BIN=<path>` 可指定 dsh 可执行文件
 （launchd 之类的精简 PATH 环境需要）。
 
-> macOS 侧的消费方：`deploy/macos/dsh-web-preset-gate.sh` 在**每次启动 web 前**与**升级 dsh 成功后**
-> 调用本工具；`FAIL(config)` 先幂等修复已知改名、仍失败则把 `agent-presets.default` 回退为 `standard`
-> 并弹窗告知（见 `deploy/macos/README.md`）。
+> 消费方（两平台同构）：
+> - macOS `deploy/macos/dsh-web-preset-gate.sh`、Windows `deploy/windows/dsh-web-preset-gate.ps1`
+>   都在**每次启动 web 前**与**升级 dsh 成功后**调用本工具；`FAIL(config)` 先幂等修复已知改名，仍失败则把
+>   `agent-presets.default` 回退为 `standard`。
+> - 注意：**插件自带的 preset 会在 web 启动时被单向重同步**，对这类 preset 就地修复会被覆盖——
+>   Windows 门禁检测到「由已安装插件托管」时跳过修复、直接回退（见 `deploy/windows/README.md` §5）。
 
 ## 官方新版刚发布时的 ETARGET（传播延迟）
 

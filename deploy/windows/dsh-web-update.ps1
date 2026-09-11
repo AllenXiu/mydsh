@@ -159,7 +159,7 @@ $script:timer.Add_Tick({
   }
   # job finished: collect exit code + output
   $out = @(Receive-Job $script:npmJob)
-  $script:npmRc = if ($out.Count -gt 0) { [int]($out[-1]) } else { 1 }
+  $script:npmRc = if ($out.Count -gt 0 -and $out[-1] -is [int]) { $out[-1] } else { 1 }
   if (Test-Path $script:npmLive) { Get-Content $script:npmLive | ForEach-Object { Log "npm: $_" } }
   Remove-Job $script:npmJob -Force
   if ($script:npmRc -eq 0) {
@@ -188,8 +188,18 @@ try {
   Log "progress window unavailable ($($_.Exception.Message)); waiting without it"
   Wait-Job $script:npmJob | Out-Null
   $out = @(Receive-Job $script:npmJob)
-  $script:npmRc = if ($out.Count -gt 0) { [int]($out[-1]) } else { 1 }
+  $script:npmRc = if ($out.Count -gt 0 -and $out[-1] -is [int]) { $out[-1] } else { 1 }
   Remove-Job $script:npmJob -Force
+}
+
+# Verify the install really landed: a failure whose exit code was not the
+# job's last output must never be read as success (see rc extraction above).
+if ($script:npmRc -eq 0) {
+  $nowVer = (& dsh --version 2>$null | Out-String).Trim()
+  if ($nowVer -ne $latest) {
+    Log "WARN post-install version mismatch (got $nowVer, expected $latest) - treating as failure"
+    $script:npmRc = 1
+  }
 }
 
 # job finished (status tracked by the retry loop above)
@@ -200,5 +210,12 @@ if ($script:npmRc -ne 0) {
 }
 $newVer = (& dsh --version 2>$null | Out-String).Trim()
 Log "updated to $newVer"
+# An upgrade is exactly when a preset written for the previous host stops
+# mounting, so guard the default preset before the web restarts.
+$gatePath = Join-Path $PSScriptRoot 'dsh-web-preset-gate.ps1'
+if (Test-Path $gatePath) {
+  Log 'running preset gate after upgrade'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $gatePath 2>&1 | ForEach-Object { Log "gate: $_" }
+}
 Log '===== dsh web update check end ====='
 exit 1
